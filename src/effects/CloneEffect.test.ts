@@ -103,6 +103,20 @@ describe('CloneEffect pooling', () => {
     const visibleCount = pool.filter((slot) => slot.avatar.root.visible).length;
     expect(visibleCount).toBe(2);
   });
+
+  it('shows the correct clones again after a disable() -> enable() cycle', () => {
+    const effect = makeEffect();
+    effect.enable();
+    effect.configure({ count: 3 });
+    effect.update(0.016, makeFrame({}, 0));
+    effect.disable();
+
+    effect.enable();
+    effect.update(0.016, makeFrame({}, 16));
+
+    const visibleCount = internals(effect).pool.filter((slot) => slot.avatar.root.visible).length;
+    expect(visibleCount).toBe(3);
+  });
 });
 
 describe('CloneEffect modes', () => {

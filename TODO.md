@@ -71,6 +71,24 @@
       sliders and a TRAIL toggle. See ARCHITECTURE.md (design + performance
       considerations, including the measured trail optimization) and
       TESTING.md (including the mobile-performance check) for details.
+- [x] **ReverseEffect** — "the Phantom responds differently from the user,"
+      via three pure, deterministic transform functions
+      (`transformPosition`/`transformRotation`/`transformLimbMotion`, in
+      their own `reverseTransforms.ts`) and three presets: MIRROR (every
+      joint reflected about the body's own centerline — a rigid, distortion-
+      free mirror image), REVERSE_HORIZONTAL (core joints copied through
+      unchanged; each limb extremity's horizontal displacement from its
+      shoulder/hip anchor inverted — "move a hand outward, the phantom
+      moves the same hand inward"), and DELAYED_MIRROR (the MIRROR
+      transform sourced from a short historical sample via the effect's own
+      `TrackingHistory`). UI: a REVERSE toggle, a Mode segmented selector,
+      and a live preview label showing the selected preset's name. While
+      writing this effect's lifecycle tests, found and fixed a
+      cross-cutting bug shared by IndependentShadowEffect/CloneEffect/
+      GhostEffect: `enable()` never undid `disable()`'s
+      `avatar.setVisible(false)`, so a real toggle-off-then-on cycle would
+      leave an effect permanently invisible — see ARCHITECTURE.md's
+      ReverseEffect section and TESTING.md for the full writeup.
 
 ## Not yet implemented
 
@@ -79,7 +97,6 @@
       IndependentShadowEffect is a distinct, more dramatic take on the same
       idea. Revisit whether a separate, simpler "just a shadow" mode is
       still wanted once more effects exist.
-- [ ] **ReverseEffect** — avatar driven by mirrored/altered movement.
 - [ ] **DelayEffect** — avatar driven by a short historical pose buffer (the
       `TrackingHistory` + delayed-target pattern already exists in
       `IndependentShadowEffect`; this would be that pattern without the

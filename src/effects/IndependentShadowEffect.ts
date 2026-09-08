@@ -156,6 +156,11 @@ export class IndependentShadowEffect implements Effect {
 
   enable(): void {
     this.enabled = true;
+    // disable() below turns the shadow avatar's own visibility override
+    // off; undo that here so a disable() -> enable() cycle actually shows
+    // it again (updateFromTracking() only ever reads that override, never
+    // sets it).
+    this.shadowAvatar.setVisible(true);
   }
 
   disable(): void {

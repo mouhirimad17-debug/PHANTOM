@@ -11,6 +11,7 @@ import { Avatar } from '../avatar/Avatar';
 import { IndependentShadowEffect } from '../effects/IndependentShadowEffect';
 import { CloneEffect, type CloneCount, type CloneMode } from '../effects/CloneEffect';
 import { GhostEffect } from '../effects/GhostEffect';
+import { ReverseEffect, type ReversePreset } from '../effects/ReverseEffect';
 import { LandingScreen } from '../ui/LandingScreen';
 import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
@@ -49,6 +50,7 @@ export class App {
   private independentShadowEffect: IndependentShadowEffect | null = null;
   private cloneEffect: CloneEffect | null = null;
   private ghostEffect: GhostEffect | null = null;
+  private reverseEffect: ReverseEffect | null = null;
 
   private facing: CameraFacing = 'user';
   private lastDetectMs = -Infinity;
@@ -83,6 +85,15 @@ export class App {
       onGhostDelayChange: (value) => this.ghostEffect?.configure({ delayMilliseconds: value }),
       onGhostGlowChange: (value) => this.ghostEffect?.configure({ glowStrength: value }),
       onGhostTrailToggle: (trailEnabled) => this.ghostEffect?.configure({ trailEnabled }),
+      onReverseToggle: (active) => {
+        if (active) this.reverseEffect?.enable();
+        else this.reverseEffect?.disable();
+        this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
+      },
+      onReversePresetChange: (preset: ReversePreset) => {
+        this.reverseEffect?.configure({ preset });
+        this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
+      },
     });
     this.landingScreen = new LandingScreen({
       onEnterCamera: () => void this.enterCamera(),
@@ -99,9 +110,19 @@ export class App {
       const independentShadowEffect = new IndependentShadowEffect(sceneManager.scene, sceneManager.floor.position.y);
       const cloneEffect = new CloneEffect(sceneManager.scene);
       const ghostEffect = new GhostEffect(sceneManager.scene);
+      const reverseEffect = new ReverseEffect(sceneManager.scene);
 
       sceneManager.onFrame((delta) =>
-        this.handleFrame(delta, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect, ghostEffect),
+        this.handleFrame(
+          delta,
+          trackingManager,
+          debugSkeleton,
+          avatar,
+          independentShadowEffect,
+          cloneEffect,
+          ghostEffect,
+          reverseEffect,
+        ),
       );
 
       this.sceneManager = sceneManager;
@@ -111,6 +132,7 @@ export class App {
       this.independentShadowEffect = independentShadowEffect;
       this.cloneEffect = cloneEffect;
       this.ghostEffect = ghostEffect;
+      this.reverseEffect = reverseEffect;
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
@@ -169,6 +191,7 @@ export class App {
     this.independentShadowEffect?.reset();
     this.cloneEffect?.reset();
     this.ghostEffect?.reset();
+    this.reverseEffect?.reset();
     this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
@@ -186,6 +209,7 @@ export class App {
     independentShadowEffect: IndependentShadowEffect,
     cloneEffect: CloneEffect,
     ghostEffect: GhostEffect,
+    reverseEffect: ReverseEffect,
   ): void {
     this.fpsCounter.update(deltaSeconds);
 
@@ -193,7 +217,16 @@ export class App {
       const now = performance.now();
       if (now - this.lastDetectMs >= this.detectIntervalMs) {
         this.lastDetectMs = now;
-        this.runDetection(now, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect, ghostEffect);
+        this.runDetection(
+          now,
+          trackingManager,
+          debugSkeleton,
+          avatar,
+          independentShadowEffect,
+          cloneEffect,
+          ghostEffect,
+          reverseEffect,
+        );
       }
     }
 
@@ -210,6 +243,7 @@ export class App {
       activeEffectLabels.push(`Clone (${mode} x${count})`);
     }
     if (ghostEffect.isEnabled()) activeEffectLabels.push(GHOST_LABEL);
+    if (reverseEffect.isEnabled()) activeEffectLabels.push(`Reverse (${reverseEffect.getPreviewLabel()})`);
 
     this.cameraScreen.updateDebugStats({
       fps: this.fpsCounter.getFps(),
@@ -234,6 +268,7 @@ export class App {
     independentShadowEffect: IndependentShadowEffect,
     cloneEffect: CloneEffect,
     ghostEffect: GhostEffect,
+    reverseEffect: ReverseEffect,
   ): void {
     const video = this.cameraScreen.videoElement;
     let raw: RawPoseFrame | null;
@@ -269,6 +304,7 @@ export class App {
     independentShadowEffect.update(effectDeltaSeconds, frame);
     cloneEffect.update(effectDeltaSeconds, frame);
     ghostEffect.update(effectDeltaSeconds, frame);
+    reverseEffect.update(effectDeltaSeconds, frame);
   }
 
   private handleFatalError(err: unknown): void {

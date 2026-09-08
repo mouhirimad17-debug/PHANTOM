@@ -37,6 +37,7 @@
             <button id="clone-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Clone effect" aria-pressed="false">CLONE</button>
             <button id="independent-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Independent Shadow effect" aria-pressed="false">INDEPENDENT</button>
             <button id="ghost-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Ghost effect" aria-pressed="false">GHOST</button>
+            <button id="reverse-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Reverse effect" aria-pressed="false">REVERSE</button>
             <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
           </div>
         </div>
@@ -77,6 +78,18 @@
           <button id="ghost-trail-toggle-btn" class="btn btn-secondary ghost-trail-btn" type="button" aria-pressed="true">
             TRAIL: ON
           </button>
+        </div>
+
+        <div id="reverse-panel" class="panel reverse-panel hidden">
+          <div class="reverse-panel-group">
+            <span class="reverse-panel-label">Mode</span>
+            <div class="segmented-control" role="group" aria-label="Reverse preset">
+              <button type="button" class="segmented-btn" data-reverse-preset="MIRROR" aria-pressed="true">MIRROR</button>
+              <button type="button" class="segmented-btn" data-reverse-preset="REVERSE_HORIZONTAL">REVERSE H.</button>
+              <button type="button" class="segmented-btn" data-reverse-preset="DELAYED_MIRROR">DELAYED</button>
+            </div>
+          </div>
+          <div class="reverse-preview-label">Mode: <span id="reverse-preview-label-value">Mirror</span></div>
         </div>
 
         <div id="debug-panel" class="panel hidden">

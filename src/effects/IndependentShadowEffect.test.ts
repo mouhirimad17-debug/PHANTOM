@@ -84,6 +84,19 @@ describe('IndependentShadowEffect lifecycle', () => {
     expect(root.visible).toBe(false);
   });
 
+  it('shows again after a disable() -> enable() cycle with a present frame', () => {
+    const effect = makeEffect();
+    effect.enable();
+    effect.update(0, makeFrame({}, 0));
+    effect.disable();
+
+    effect.enable();
+    effect.update(0.016, makeFrame({}, 16));
+
+    const root = (effect as unknown as { shadowAvatar: { root: { visible: boolean } } }).shadowAvatar.root;
+    expect(root.visible).toBe(true);
+  });
+
   it('reset() makes the next update() snap instantly instead of lerping from stale state', () => {
     const effect = makeEffect();
     effect.enable();

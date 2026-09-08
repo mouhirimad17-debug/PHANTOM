@@ -16,7 +16,7 @@ src/
   avatar/     procedural humanoid mannequin (capsule-primitive limbs,
               quaternion-oriented from tracked joint positions each frame)
   effects/    Effect interface + implementations: IndependentShadowEffect,
-              CloneEffect, GhostEffect (Reverse/Delay not yet implemented)
+              CloneEffect, GhostEffect, ReverseEffect (Delay not yet implemented)
   recording/  (not yet implemented — canvas capture -> video file)
   ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
   utils/      shared, dependency-free helpers (math, DOM, FPS, pose landmark constants)
@@ -448,3 +448,88 @@ cheaper to compute.
   entirely) before reaching for a lower `glowStrength` or disabling Ghost
   altogether — glow strength only affects a material property, not draw
   calls, so it has no measurable performance cost on its own.
+
+### ReverseEffect (`effects/ReverseEffect.ts`, `effects/reverseTransforms.ts`)
+
+"The Phantom responds differently from the user" — a second `Avatar` (plain
+`'mannequin'` mode, offset a small fixed amount from the live avatar so the
+two never fully overlap) driven by one of three presets, each built from
+three small, pure, deterministic transform functions kept in their own
+module (`reverseTransforms.ts`, the same separation-of-concerns pattern as
+`avatar/limbMath.ts` next to `Avatar.ts`):
+
+- **`transformPosition(out, position, mirrorX)`** — reflects a joint across
+  a vertical mirror plane at `mirrorX`. Only X changes; it's a pure
+  reflection (an isometry), so reflecting every joint of a body about the
+  *same* plane preserves every limb length and body proportion exactly —
+  the mirrored figure is never stretched or distorted, whatever pose it's
+  copying.
+- **`transformRotation(rotation)`** — reflects a yaw angle (the same
+  `atan2(dz, dx)` convention as `TrackingFrame.torsoRotation`) the way
+  `transformPosition` reflects a coordinate, via `atan2` of the reflected
+  direction vector (not a plain subtraction) so it stays correctly wrapped
+  for every input angle.
+- **`transformLimbMotion(out, jointPosition, anchorPosition)`** — inverts
+  only the horizontal component of a joint's displacement from a fixed
+  anchor (e.g. a wrist from its shoulder). Negating one vector component
+  never changes the vector's magnitude, so the anchor-to-joint distance
+  (reach/limb length) is preserved exactly — this can never stretch a limb
+  or produce `NaN`, even when the joint sits exactly on its anchor.
+
+All three are pure functions with no effect state, no Three.js scene
+access, and — per the explicit "do not make the behavior mathematically
+chaotic" requirement — no randomness of any kind; each is independently
+unit-tested (reflection involution, rotation wraparound/involution,
+displacement-magnitude preservation) in `reverseTransforms.test.ts`.
+
+**Presets** (`ReversePreset`), each mapped to a distinct combination of the
+above rather than its own bespoke math:
+
+- **MIRROR** — `transformPosition()` applied to *every* joint about the
+  source frame's own `bodyCenter.x`, producing a full, rigid mirror-image
+  duplicate. Because reflecting a body about its own centerline leaves that
+  centerline fixed, the reported `torsoRotation` is explicitly re-derived
+  via `transformRotation()` afterward so it stays consistent with the
+  mirrored joint positions (see the class doc for why this is applied to
+  the frame's data rather than via `Avatar.setRotation()`'s root-level
+  Euler override — `Avatar` positions every limb with absolute scene
+  coordinates, so rotating the root would swing the whole body through a
+  wide arc around the world origin instead of spinning it in place, which
+  would look broken for anything but a very small angle).
+- **REVERSE_HORIZONTAL** — the literal "move a hand outward, the phantom
+  moves the same hand inward" behavior. Core joints (nose, shoulders, hips)
+  are copied through unchanged — the phantom's stance and turning still
+  read as faithful to the user — while each limb extremity
+  (elbow/wrist/index finger; knee/ankle/foot-index) is passed through
+  `transformLimbMotion()` relative to its own shoulder/hip anchor
+  (`LIMB_ANCHORS`). This deliberately does *not* touch `torsoRotation` —
+  body turning passes straight through, only the limbs respond differently
+  — see TESTING.md's "body rotation" case for this preset.
+- **DELAYED_MIRROR** — exactly the MIRROR transform, just sourced from
+  `history.getAtOffset(DELAYED_MIRROR_DELAY_MS)` (the effect's own private
+  `TrackingHistory`, same "effects that need history own their instance"
+  pattern as every other effect here) instead of the live frame — the
+  "optional delayed response." The delay is a fixed internal constant, not
+  a UI-exposed slider, matching how `CloneEffect`'s `BASE_SPACING` and
+  `GhostEffect`'s breathing constants are also fixed, non-UI knobs baked
+  into a preset rather than a general-purpose parameter.
+
+**Preview label**: `getPreviewLabel()` returns a short, human string for
+the active preset ("Mirror" / "Reverse Horizontal" / "Delayed Mirror"),
+which the REVERSE panel displays directly and `App.ts` also folds into the
+DEBUG panel's "Effect" row (`Reverse (<label>)`) — the same one-directional
+"App queries the effect, UI just reflects it" flow used for Clone's
+`Clone (<mode> x<count>)` label.
+
+**A cross-cutting bug found and fixed during this effect's tests**: writing
+`ReverseEffect`'s lifecycle tests surfaced that `enable()` on
+`IndependentShadowEffect`, `CloneEffect`, and `GhostEffect` (and the first
+draft of `ReverseEffect` itself) never undid `disable()`'s
+`avatar.setVisible(false)` — `Avatar.updateFromTracking()` only *reads* the
+visibility override, it never resets it, so a real disable-then-re-enable
+UI cycle (exactly what tapping a toggle button off and back on does) would
+leave that effect permanently invisible for the rest of the session. Fixed
+by having each `enable()` call `setVisible(true)` on its own avatar(s) (all
+pool slots, for `CloneEffect`) before the first `update()` re-derives the
+correct per-slot visibility. Covered by a new regression test in each of
+the four effects' suites.

@@ -1,6 +1,7 @@
 import { requireElement } from '../utils/dom';
 import type { TrackingState } from '../types/tracking';
 import type { CloneCount, CloneMode } from '../effects/CloneEffect';
+import type { ReversePreset } from '../effects/ReverseEffect';
 
 export interface CameraScreenCallbacks {
   onBack: () => void;
@@ -18,6 +19,8 @@ export interface CameraScreenCallbacks {
   onGhostDelayChange: (value: number) => void;
   onGhostGlowChange: (value: number) => void;
   onGhostTrailToggle: (trailEnabled: boolean) => void;
+  onReverseToggle: (active: boolean) => void;
+  onReversePresetChange: (preset: ReversePreset) => void;
 }
 
 export interface DebugStats {
@@ -69,11 +72,17 @@ export class CameraScreen {
   private readonly ghostPanel = requireElement<HTMLElement>('ghost-panel');
   private readonly ghostTrailToggleBtn = requireElement<HTMLButtonElement>('ghost-trail-toggle-btn');
 
+  private readonly reverseToggleBtn = requireElement<HTMLButtonElement>('reverse-toggle-btn');
+  private readonly reversePanel = requireElement<HTMLElement>('reverse-panel');
+  private readonly reversePresetBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-reverse-preset]'));
+  private readonly reversePreviewLabelEl = requireElement<HTMLElement>('reverse-preview-label-value');
+
   private debugVisible = false;
   private independentActive = false;
   private cloneActive = false;
   private ghostActive = false;
   private ghostTrailActive = true;
+  private reverseActive = false;
 
   constructor(callbacks: CameraScreenCallbacks) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
@@ -145,6 +154,17 @@ export class CameraScreen {
       this.setGhostTrailActive(!this.ghostTrailActive);
       callbacks.onGhostTrailToggle(this.ghostTrailActive);
     });
+
+    this.reverseToggleBtn.addEventListener('click', () => {
+      this.setReverseActive(!this.reverseActive);
+      callbacks.onReverseToggle(this.reverseActive);
+    });
+    for (const btn of this.reversePresetBtns) {
+      btn.addEventListener('click', () => {
+        this.setSegmentedPressed(this.reversePresetBtns, btn);
+        callbacks.onReversePresetChange(btn.dataset['reversePreset'] as ReversePreset);
+      });
+    }
   }
 
   private setCloneActive(active: boolean): void {
@@ -173,6 +193,18 @@ export class CameraScreen {
     this.ghostTrailToggleBtn.textContent = active ? 'TRAIL: ON' : 'TRAIL: OFF';
   }
 
+  private setReverseActive(active: boolean): void {
+    this.reverseActive = active;
+    this.reverseToggleBtn.classList.toggle('active', active);
+    this.reverseToggleBtn.setAttribute('aria-pressed', String(active));
+    this.reversePanel.classList.toggle('hidden', !active);
+  }
+
+  /** Reflects ReverseEffect's currently selected preset in the panel's preview label — see App.ts's onReverseToggle/onReversePresetChange. */
+  setReversePreviewLabel(label: string): void {
+    this.reversePreviewLabelEl.textContent = label;
+  }
+
   getContainer(): HTMLElement {
     return this.root;
   }
@@ -194,6 +226,9 @@ export class CameraScreen {
     this.setCloneActive(false);
     this.setGhostActive(false);
     this.setGhostTrailActive(true); // matches DEFAULT_GHOST_PARAMS.trailEnabled
+    this.setReverseActive(false);
+    this.setSegmentedPressed(this.reversePresetBtns, this.reversePresetBtns.find((b) => b.dataset['reversePreset'] === 'MIRROR'));
+    this.setReversePreviewLabel('Mirror'); // matches DEFAULT_REVERSE_PARAMS.preset
   }
 
   showLoading(): void {

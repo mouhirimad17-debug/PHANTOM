@@ -340,6 +340,39 @@ body {
   color: #00201a;
 }
 
+/* Reverse controls: left-hand column, stacked below the debug panel's
+   fixed position (same fixed-offset stacking convention as the ghost panel
+   on the right) — shown whenever REVERSE is toggled on. */
+.reverse-panel {
+  top: calc(max(1rem, env(safe-area-inset-top)) + 56px + 290px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 200px;
+}
+
+.reverse-panel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.reverse-panel-label {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.reverse-preview-label {
+  color: var(--text-dim);
+}
+
+.reverse-preview-label span {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .debug-row-slider input[type='range'] {
   width: 100%;
   accent-color: var(--accent);

@@ -121,6 +121,47 @@ yet.
   material; `reset()` restores defaults and hides everything; and invalid
   `opacity`/`delayMilliseconds`/`glowStrength`/`trailStrength` values are
   clamped to their documented ranges.
+- `src/effects/reverseTransforms.test.ts` — the three pure transform
+  functions in isolation: `transformPosition()` reflects X and leaves Y/Z
+  untouched, reflects correctly about a non-zero plane, leaves a point on
+  the mirror plane unchanged, is its own inverse (reflecting twice restores
+  the original), and preserves the distance between two points reflected
+  about the same plane (proof it can never stretch a body); `transformRotation()`
+  correctly reflects several known angles (0 -> π, π/2 unchanged since it
+  points along the mirror plane, π/4 -> 3π/4), always returns a value in
+  `(-π, π]`, and is its own inverse; `transformLimbMotion()` inverts only
+  the horizontal displacement from an anchor, is a safe no-op when the
+  joint sits exactly on its anchor (no `NaN`), preserves the anchor-to-
+  joint distance exactly, and turns an outward move into an inward one of
+  the same magnitude.
+- `src/effects/ReverseEffect.test.ts` — lifecycle (shows/hides across
+  enable/disable/tracking-loss, including a disable-then-re-enable cycle —
+  see the cross-cutting bug note in ARCHITECTURE.md); the preview label for
+  each preset and default; an invalid preset string is ignored; **MIRROR**:
+  a hand moved outward mirrors to the same absolute offset on the other
+  side of the body's own center, arm segment lengths are preserved exactly
+  (rigid reflection), and a turned body's reported `torsoRotation` reflects
+  consistently with the mirrored shoulder positions; **REVERSE_HORIZONTAL**:
+  the core (shoulders/hips/nose) matches the live user exactly, an outward
+  hand move becomes an inward move of the *same* hand (not swapped to the
+  other side) with the exact same magnitude, limb reach (anchor-to-joint
+  distance) is preserved exactly, and body rotation passes through
+  unreversed while the limb inversion still applies; **DELAYED_MIRROR**:
+  lags behind a moving target compared to plain MIRROR, and reduces to
+  identical output to MIRROR once the pose has been static long enough for
+  history and live frame to agree; a "walking-in-place-like" alternating
+  knee-lift sequence and a "camera movement" sideways body drift are each
+  exercised frame-by-frame to confirm no discontinuities and that the
+  mirror plane re-centers on the *current* frame's `bodyCenter` every
+  frame, never a stale one; `reset()` restores the default preset and hides
+  the effect.
+- `src/effects/IndependentShadowEffect.test.ts`, `CloneEffect.test.ts`,
+  `GhostEffect.test.ts` (regression additions) — each now also asserts that
+  a `disable()` -> `enable()` cycle followed by a present frame actually
+  shows the effect again, locking in the cross-cutting visibility fix
+  described in ARCHITECTURE.md's ReverseEffect section (writing
+  `ReverseEffect`'s own version of this test is what surfaced the bug in
+  the first place).
 
 These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
 transforms) — that must still be checked in a real/scripted browser, since
@@ -306,6 +347,46 @@ real device's GPU-accelerated performance, but the *relative* comparison
 (baseline vs. Ghost, before vs. after the trail optimization) is meaningful
 and is what drove the InstancedMesh change. **This does not substitute for
 testing on a real phone** — see the manual checklist below.
+
+## What was verified for Reverse (this phase)
+
+Same sandbox network restriction and approach as the previous effect
+phases: the real, unmodified `SceneManager`, `TrackingManager`, `Avatar`,
+and `ReverseEffect` modules driven directly with synthetic pose data in a
+real Chromium/WebGL context, rendering to a real canvas, for all three
+presets across the four required scenarios (arms, body rotation,
+walking-in-place-like movement, camera movement):
+
+1. **Arms — MIRROR**: raising one arm outward produces a reverse figure
+   whose corresponding raised arm points outward on the *opposite* side —
+   the two figures read as true mirror images of each other, standing
+   side by side, arms reaching away from one another exactly as two people
+   facing a real mirror would.
+2. **Arms — REVERSE_HORIZONTAL**: the same outward-raised arm produces a
+   reverse figure whose arm visibly crosses *inward*, toward its own body
+   — clearly, visibly different from MIRROR's outward reflection, and a
+   direct visual match for the spec's literal example ("moves its hand
+   inward").
+3. **Body rotation**: turning the torso while holding the arm raised keeps
+   both MIRROR and REVERSE_HORIZONTAL geometrically coherent through the
+   turn — no limb detaches, stretches, or snaps to an unrelated position at
+   any point in the rotation sequence.
+4. **Walking-in-place-like movement**: an alternating knee-lift sequence
+   renders smoothly frame to frame under all three presets, with no visible
+   jumps or frozen limbs.
+5. **Camera movement**: sweeping the whole body sideways (simulating the
+   user or camera moving) keeps the reverse figure correctly mirrored about
+   the *current* frame's body center at every step — it never lags behind
+   or reflects about a stale position, for MIRROR/REVERSE_HORIZONTAL (no
+   delay); DELAYED_MIRROR shows the same sweep with a visible, bounded lag,
+   as expected.
+
+Zero console/page errors across all fifteen (3 presets × 5 scenario/preset
+combinations plus the arms comparison) captures. As with every previous
+effect phase, this proves the transform math and preset wiring render
+correctly for the poses tested — it is not a substitute for judging how
+the effect feels against a real, continuously noisy camera feed. See the
+checklist below for that.
 
 ## Manual verification checklist (run this in a real browser with a real camera)
 
@@ -644,6 +725,76 @@ Opacity/Delay/Glow sliders and a TRAIL toggle appears.
 - [ ] If FPS drops noticeably on a given device with GHOST + TRAIL both on,
       turn TRAIL off first (the documented cheapest lever) and confirm FPS
       recovers before concluding the device can't handle the effect at all.
+
+## Manual verification: Reverse effect (this phase)
+
+Open the camera and tap **REVERSE** to enable the effect — a Mode selector
+(MIRROR / REVERSE H. / DELAYED) and a "Mode: <label>" preview line appear.
+
+**Basic toggle and controls**
+
+- [ ] Tapping REVERSE shows a second figure, offset to the side, whose
+      movement responds differently from your own; the button visibly
+      indicates it's active.
+- [ ] Tapping it again hides the phantom immediately; the live avatar is
+      unaffected.
+- [ ] Switching between MIRROR / REVERSE H. / DELAYED changes the
+      phantom's behavior immediately, without hiding/reshowing it.
+- [ ] The preview label always shows the currently selected mode's name
+      ("Mirror" / "Reverse Horizontal" / "Delayed Mirror"), updating the
+      instant you pick a different one.
+
+**Arms**
+
+- [ ] **MIRROR**: raise one arm outward — the phantom's corresponding arm
+      raises outward on the *opposite* side, reading as a true mirror
+      image standing beside you (like looking at your reflection).
+- [ ] **REVERSE_HORIZONTAL**: raise the same arm outward — the phantom's
+      *same-side* arm should visibly move inward, toward its own body,
+      clearly different from MIRROR's outward reflection. This is the
+      literal "move a hand outward, the phantom moves it inward" behavior.
+- [ ] In both modes, the phantom's arm never looks stretched, snapped to a
+      strange position, or disconnected from its shoulder.
+
+**Body rotation**
+
+- [ ] **MIRROR**: turning your body left/right should make the phantom
+      appear to turn the opposite way, consistent with a real mirror.
+- [ ] **REVERSE_HORIZONTAL**: turning your body should turn the phantom
+      the *same* way you turned (not reversed) — only the limbs respond
+      differently in this mode, not the overall stance/facing.
+
+**Walking-in-place-like movement**
+
+- [ ] March in place (alternating knee lifts). The phantom should track
+      the motion smoothly under every preset, with no jitter, freezing, or
+      limbs snapping between frames.
+
+**Camera movement**
+
+- [ ] Move side to side, or step closer/farther from the camera. The
+      phantom should stay correctly mirrored/inverted relative to your
+      *current* position at all times — MIRROR and REVERSE_HORIZONTAL
+      should never look like they're reflecting about a stale, earlier
+      position.
+- [ ] **DELAYED_MIRROR**: the same movement should show a clear, bounded
+      lag (the phantom mirrors where you were a fraction of a second ago),
+      distinct from the immediate response of plain MIRROR.
+
+**Guardrails (things that must never happen)**
+
+- [ ] The phantom's proportions never look stretched, twisted, or
+      disconnected — every preset is a rigid reflection or a same-length
+      limb inversion, so nothing here should ever distort body shape.
+- [ ] Movement never looks erratic, jittery, or random — everything is a
+      deterministic transform of your own tracked movement; if it ever
+      looks chaotic, that's a bug, not the intended "mirror"/"reverse"
+      character.
+- [ ] The output should read as **intentionally designed** — a coherent
+      second figure with a clear, describable relationship to your
+      movement — never like broken or lagging tracking.
+- [ ] Tracking loss (step out of frame) hides the phantom; stepping back
+      in resumes correctly without a stale pose flash.
 
 ## Mobile-specific checks
 

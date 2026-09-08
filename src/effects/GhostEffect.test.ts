@@ -94,6 +94,18 @@ describe('GhostEffect lifecycle', () => {
     expect(internals(effect).ghostAvatar.root.visible).toBe(false);
   });
 
+  it('shows again after a disable() -> enable() cycle with a present frame', () => {
+    const effect = makeEffect();
+    effect.enable();
+    effect.update(0.016, makeFrame({}, 0));
+    effect.disable();
+
+    effect.enable();
+    effect.update(0.016, makeFrame({}, 16));
+
+    expect(internals(effect).ghostAvatar.root.visible).toBe(true);
+  });
+
   it('hides on a not-present frame and resumes when tracking returns', () => {
     const effect = makeEffect();
     effect.enable();

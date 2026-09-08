@@ -132,6 +132,13 @@ export class CloneEffect implements Effect {
 
   enable(): void {
     this.enabled = true;
+    // disable() below turns every pooled avatar's own visibility override
+    // off; undo that here so a disable() -> enable() cycle actually shows
+    // them again (update() only ever reads that override via
+    // updateFromTracking(), never sets it back to true — any slot beyond
+    // the configured count is correctly hidden again on the very next
+    // update() call regardless).
+    for (const slot of this.pool) slot.avatar.setVisible(true);
   }
 
   disable(): void {
