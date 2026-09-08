@@ -57,6 +57,20 @@
       opacity for visual variation. UI: a CLONE toggle, count/mode segmented
       selectors, and RESET ALL. See ARCHITECTURE.md (design + performance
       considerations) and TESTING.md for the full test checklist.
+- [x] **GhostEffect** — a translucent, glow-accented duplicate. `Avatar`
+      gained a fourth display mode (`'ghost'`) using normal (not additive)
+      alpha blending so the effect stays readable over both bright and dark
+      backgrounds, plus a new `setGlowIntensity()` for the emissive "glow
+      strength" knob. Deterministic scale breathing and vertical drift (both
+      sinusoids, no `Math.random()`), an optional single-sample historical
+      delay (own `TrackingHistory`, no spring), and a fixed-size fading
+      motion trail at a handful of extremity joints, rendered as one
+      `InstancedMesh` per trail step rather than one mesh per joint after a
+      CPU-throttled benchmark showed the naive version costing ~3x the base
+      avatar's render time. UI: a GHOST toggle plus Opacity/Delay/Glow
+      sliders and a TRAIL toggle. See ARCHITECTURE.md (design + performance
+      considerations, including the measured trail optimization) and
+      TESTING.md (including the mobile-performance check) for details.
 
 ## Not yet implemented
 
@@ -65,7 +79,6 @@
       IndependentShadowEffect is a distinct, more dramatic take on the same
       idea. Revisit whether a separate, simpler "just a shadow" mode is
       still wanted once more effects exist.
-- [ ] **GhostEffect** — reduced opacity + visual separation from the live avatar.
 - [ ] **ReverseEffect** — avatar driven by mirrored/altered movement.
 - [ ] **DelayEffect** — avatar driven by a short historical pose buffer (the
       `TrackingHistory` + delayed-target pattern already exists in

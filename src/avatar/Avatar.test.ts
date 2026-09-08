@@ -129,6 +129,36 @@ describe('Avatar', () => {
     expect(jointMarkers?.visible).toBe(true);
   });
 
+  it('setDisplayMode("ghost") swaps in a translucent, glow-tunable material', () => {
+    const scene = new Scene();
+    const avatar = new Avatar(scene);
+    avatar.updateFromTracking(makeTrackedFrame());
+
+    avatar.setDisplayMode('ghost');
+    const forearm = getSegment(avatar, 'leftForearm');
+    const material = forearm.material as MeshStandardMaterial;
+    expect(avatar.getDisplayMode()).toBe('ghost');
+    expect(material.transparent).toBe(true);
+
+    const baseline = material.emissiveIntensity;
+    avatar.setGlowIntensity(2);
+    expect(material.emissiveIntensity).toBeGreaterThan(baseline);
+    avatar.setGlowIntensity(0);
+    expect(material.emissiveIntensity).toBe(0);
+  });
+
+  it('setGlowIntensity does not affect other display modes\' materials', () => {
+    const scene = new Scene();
+    const avatar = new Avatar(scene);
+    avatar.updateFromTracking(makeTrackedFrame());
+    const forearm = getSegment(avatar, 'leftForearm');
+    const mannequinEmissiveBefore = (forearm.material as MeshStandardMaterial).emissiveIntensity;
+
+    avatar.setGlowIntensity(2);
+
+    expect((forearm.material as MeshStandardMaterial).emissiveIntensity).toBe(mannequinEmissiveBefore);
+  });
+
   it('reset() returns to hidden, identity transform, full opacity', () => {
     const scene = new Scene();
     const avatar = new Avatar(scene);

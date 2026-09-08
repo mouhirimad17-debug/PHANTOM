@@ -36,6 +36,7 @@
           <div id="camera-topbar-right">
             <button id="clone-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Clone effect" aria-pressed="false">CLONE</button>
             <button id="independent-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Independent Shadow effect" aria-pressed="false">INDEPENDENT</button>
+            <button id="ghost-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Ghost effect" aria-pressed="false">GHOST</button>
             <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
           </div>
         </div>
@@ -58,6 +59,24 @@
             </div>
           </div>
           <button id="clone-reset-all-btn" class="btn btn-secondary clone-reset-btn" type="button">RESET ALL</button>
+        </div>
+
+        <div id="ghost-panel" class="panel ghost-panel hidden">
+          <div class="ghost-panel-row">
+            <label for="ghost-opacity-slider">Opacity</label>
+            <input id="ghost-opacity-slider" type="range" min="0" max="1" step="0.05" value="0.4" aria-label="Ghost opacity" />
+          </div>
+          <div class="ghost-panel-row">
+            <label for="ghost-delay-slider">Delay</label>
+            <input id="ghost-delay-slider" type="range" min="0" max="600" step="10" value="90" aria-label="Ghost delay in milliseconds" />
+          </div>
+          <div class="ghost-panel-row">
+            <label for="ghost-glow-slider">Glow</label>
+            <input id="ghost-glow-slider" type="range" min="0" max="2" step="0.05" value="1" aria-label="Ghost glow strength" />
+          </div>
+          <button id="ghost-trail-toggle-btn" class="btn btn-secondary ghost-trail-btn" type="button" aria-pressed="true">
+            TRAIL: ON
+          </button>
         </div>
 
         <div id="debug-panel" class="panel hidden">

@@ -3,6 +3,8 @@ import type { TrackingFrame } from '../types/tracking';
 import { PoseLandmark } from '../utils/poseLandmarks';
 import { computeSegmentTransform } from './limbMath';
 import {
+  BASE_GHOST_EMISSIVE_INTENSITY,
+  createGhostMaterial,
   createMannequinMaterial,
   createShadowMaterial,
   createSkeletonMaterial,
@@ -10,14 +12,21 @@ import {
   SPHERE_GEOMETRY,
 } from './avatarGeometry';
 
+/** Never let a caller drive the ghost material's emissive so high it stops reading as a soft glow and starts blowing out. */
+const MAX_GLOW_STRENGTH = 2;
+
 /**
  * 'shadow': dark, minimally-emissive, transparent — for effects that render
  * a duplicate meant to read as "your shadow," not another body (see
  * effects/IndependentShadowEffect.ts). Uses the same full-body radius as
  * 'mannequin' (a shadow of a body is still body-shaped) — only the material
  * differs.
+ * 'ghost': translucent, glow-accented — for effects that render a
+ * "spectral" duplicate (see effects/GhostEffect.ts). Also full-body radius;
+ * only the material (and, via `setGlowIntensity()`, its emissive strength)
+ * differs.
  */
-export type AvatarDisplayMode = 'mannequin' | 'skeleton' | 'shadow';
+export type AvatarDisplayMode = 'mannequin' | 'skeleton' | 'shadow' | 'ghost';
 
 /** Floor for bodyScale so a bad/zero reading can't collapse every segment to nothing. */
 const MIN_BODY_SCALE = 0.05;
@@ -80,6 +89,7 @@ export class Avatar {
   private readonly mannequinMaterial = createMannequinMaterial();
   private readonly skeletonMaterial = createSkeletonMaterial();
   private readonly shadowMaterial = createShadowMaterial();
+  private readonly ghostMaterial = createGhostMaterial();
 
   private readonly headMesh: Mesh;
   private readonly jointMarkers: InstancedMesh;
@@ -257,7 +267,13 @@ export class Avatar {
     this.displayMode = mode;
 
     const material =
-      mode === 'mannequin' ? this.mannequinMaterial : mode === 'skeleton' ? this.skeletonMaterial : this.shadowMaterial;
+      mode === 'mannequin'
+        ? this.mannequinMaterial
+        : mode === 'skeleton'
+          ? this.skeletonMaterial
+          : mode === 'shadow'
+            ? this.shadowMaterial
+            : this.ghostMaterial;
     for (const limb of this.limbs) {
       limb.mesh.material = material;
     }
@@ -308,6 +324,21 @@ export class Avatar {
     this.skeletonMaterial.opacity = clamped;
     this.shadowMaterial.transparent = true; // shadow mode is always at least slightly transparent
     this.shadowMaterial.opacity = clamped;
+    this.ghostMaterial.transparent = true; // ghost mode is always at least slightly transparent
+    this.ghostMaterial.opacity = clamped;
+  }
+
+  /**
+   * Scales the ghost material's emissive intensity relative to its baseline
+   * (`BASE_GHOST_EMISSIVE_INTENSITY`) — the "glow strength" knob for
+   * GhostEffect. Has no effect on the other display modes' materials, which
+   * keep their own fixed emissive levels. `strength` is clamped here (not
+   * left to the caller) since this method mutates shared material state
+   * directly.
+   */
+  setGlowIntensity(strength: number): void {
+    const clamped = Math.max(0, Math.min(MAX_GLOW_STRENGTH, strength));
+    this.ghostMaterial.emissiveIntensity = BASE_GHOST_EMISSIVE_INTENSITY * clamped;
   }
 
   /** Returns the avatar to its just-constructed state: hidden, identity transform, opaque, ready for a new tracking session. */
@@ -319,6 +350,7 @@ export class Avatar {
     this.root.rotation.set(0, 0, 0);
     this.root.scale.setScalar(1);
     this.setOpacity(1);
+    this.setGlowIntensity(1);
   }
 
   /** Releases this instance's own materials (the shared geometries are never disposed — see avatarGeometry.ts) and detaches from the scene. */
@@ -326,6 +358,7 @@ export class Avatar {
     this.mannequinMaterial.dispose();
     this.skeletonMaterial.dispose();
     this.shadowMaterial.dispose();
+    this.ghostMaterial.dispose();
     this.root.removeFromParent();
   }
 }

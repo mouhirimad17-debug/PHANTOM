@@ -16,7 +16,7 @@ src/
   avatar/     procedural humanoid mannequin (capsule-primitive limbs,
               quaternion-oriented from tracked joint positions each frame)
   effects/    Effect interface + implementations: IndependentShadowEffect,
-              CloneEffect (Ghost/Reverse/Delay not yet implemented)
+              CloneEffect, GhostEffect (Reverse/Delay not yet implemented)
   recording/  (not yet implemented — canvas capture -> video file)
   ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
   utils/      shared, dependency-free helpers (math, DOM, FPS, pose landmark constants)
@@ -171,23 +171,29 @@ this; `Avatar.setRotation()` (the whole-avatar override) uses Euler angles
 instead, which is fine there because it's one independent transform, not a
 chained sequence.
 
-- **Display modes**: `setDisplayMode('mannequin' | 'skeleton' | 'shadow')`
-  swaps which of three pre-built materials each mesh uses (dark/neutral +
-  soft emissive for mannequin; brighter, thinner for skeleton; near-black,
-  transparent, barely-emissive for shadow — see
-  `effects/IndependentShadowEffect.ts`) and toggles head-mesh/joint-marker
-  visibility — it never creates or destroys meshes. 'shadow' reuses the
-  full-bodied mannequin radius (only the material differs); flattening is
-  the driving effect's job, not a thinner geometry.
+- **Display modes**: `setDisplayMode('mannequin' | 'skeleton' | 'shadow' |
+  'ghost')` swaps which of four pre-built materials each mesh uses
+  (dark/neutral + soft emissive for mannequin; brighter, thinner for
+  skeleton; near-black, transparent, barely-emissive for shadow — see
+  `effects/IndependentShadowEffect.ts`; translucent, glow-accented for ghost
+  — see `effects/GhostEffect.ts`) and toggles head-mesh/joint-marker
+  visibility — it never creates or destroys meshes. 'shadow' and 'ghost'
+  both reuse the full-bodied mannequin radius (only the material differs);
+  flattening/glow/breathing are the driving effect's job, not a different
+  geometry.
 - **Reuse**: `avatar/avatarGeometry.ts` holds ONE shared capsule geometry
   (used by all 15 limbs, differentiated only by each mesh's own
   position/quaternion/scale) and ONE shared sphere geometry (head + joint
-  markers + a driving effect's own contact-shadow blobs), as module-level
-  singletons shared by every `Avatar` instance. Materials are the one
-  exception — each `Avatar` builds its own trio, because `setOpacity()`
-  must affect one instance without bleeding into every other instance
-  sharing the scene (exactly what happens once `IndependentShadowEffect`'s
-  own `Avatar` needs a different opacity than the live one).
+  markers + a driving effect's own contact-shadow/trail blobs), as
+  module-level singletons shared by every `Avatar` instance. Materials are
+  the one exception — each `Avatar` builds its own set of four, because
+  `setOpacity()` must affect one instance without bleeding into every other
+  instance sharing the scene (exactly what happens once
+  `IndependentShadowEffect`'s or `GhostEffect`'s own `Avatar` needs a
+  different opacity than the live one). `setGlowIntensity()` follows the
+  same per-instance-material logic, but only ever touches the ghost
+  material — the other three display modes keep their own fixed emissive
+  levels regardless of how a ghost's `glowStrength` is set.
 - **Shadow**: every limb mesh sets `castShadow`/`receiveShadow`, so the
   floor/light/shadow-map already set up in `rendering/SceneManager.ts`
   render a real soft shadow under the character — no new lighting was
@@ -345,3 +351,100 @@ offset in space and/or time, not a settling illusion.
   codebase not guessing device capability up front) — the DEBUG panel's FPS
   reading is the existing, already-documented way to judge whether an
   effect combination is too heavy for a given device.
+
+### GhostEffect (`effects/GhostEffect.ts`)
+
+A translucent, glow-accented duplicate meant to read as "spectral" rather
+than the dark, grounded IndependentShadowEffect or the faithful,
+photo-booth-style CloneEffect. Unlike IndependentShadowEffect, there is no
+spring/follow physics — the ghost's pose is either the live frame or a
+single fixed historical sample (`delayMilliseconds`), which is enough to
+feel detached from time without a physics simulation, and considerably
+cheaper to compute.
+
+- **Material and readability over any background**: `Avatar` gained a
+  fourth display mode, `'ghost'`, backed by `createGhostMaterial()`
+  (`avatar/avatarGeometry.ts`) — translucent, with an emissive accent, using
+  **normal** alpha blending rather than `AdditiveBlending`. This is a
+  deliberate response to the explicit "must remain readable over bright and
+  dark backgrounds" requirement: additive blending adds light on top of
+  whatever is behind it, which reads as a strong highlight over a dark scene
+  but nearly disappears over a bright one (there's little headroom left to
+  add to). Normal blending's opacity-based compositing keeps the
+  silhouette's visibility consistent regardless of background brightness —
+  confirmed visually by rendering the same pose against both a pure-white
+  and a near-black clear color (see TESTING.md). The "additive/emissive
+  accent" look is instead produced by driving the material's
+  `emissiveIntensity` (via the new `Avatar.setGlowIntensity()`, scaled by
+  `glowStrength`) rather than by changing the GPU blend mode.
+- **Delayed pose**: `GhostEffect` owns a private `TrackingHistory` (same
+  pattern as `IndependentShadowEffect` and `CloneEffect` — effects that need
+  history own their own instance). When `delayMilliseconds > 0`, the ghost's
+  frame is `copyTrackingFrame()`'d from `history.getAtOffset(delayMilliseconds)`
+  instead of the live frame; at `0` (its default-adjacent, "optional" state)
+  it reads the live frame directly. No spring — a direct copy, like
+  CloneEffect's DELAYED mode, since the ghost isn't meant to visibly *chase*
+  a target the way the shadow does.
+- **Breathing and drift**: both are deterministic sinusoids over an
+  effect-owned elapsed-time accumulator (`elapsedSeconds`, advanced only
+  while a body is tracked) — never `Math.random()`. Breathing scales the
+  whole ghost avatar's root uniformly (`Avatar.setScale()`) by a few percent
+  around 1; vertical drift offsets the root's Y (`Avatar.setPosition()`) by
+  a small fraction of the tracked `bodyScale`, on a different frequency and
+  phase than breathing so the two don't visually sync into one obvious
+  pulse. Both are small enough to read as "alive," not as a distracting
+  animation — see the "do not make it visually noisy" requirement.
+- **Trail**: a fixed number of trail "steps" (`TRAIL_STEP_COUNT = 3`), each
+  echoing a handful of extremity joints (nose, both wrists, both ankles —
+  the joints where a trail actually reads, unlike a core joint like the
+  hips) from `history.getAtOffset()` at increasing lookback, with opacity
+  and size fading further back in the lineup. `trailEnabled` (the UI
+  toggle) hides every step outright; `trailStrength` (0..1, not currently a
+  UI slider — configurable via `configure()` like CloneEffect's
+  `spreadDistance`) scales each step's opacity/size continuously. Each
+  step's joints are drawn as ONE `InstancedMesh` (not one `Mesh` per joint)
+  — see Performance below for why.
+- **Independent transform root, own material set**: the ghost's `Avatar` is
+  a fully separate instance from the live avatar (its own root, its own
+  ghost material), exactly like every other effect in this codebase — no
+  effect ever mutates the live avatar's own state.
+
+#### Performance considerations
+
+- **No post-processing**: the "glow" is entirely a material property
+  (`emissiveIntensity`), not a render-target bloom/blur pass. This was a
+  deliberate choice per the explicit "avoid heavy post-processing if it
+  causes mobile performance issues" requirement — a bloom pass costs at
+  least one extra full-screen render target and blur pass every frame
+  regardless of scene complexity, which is a poor tradeoff for a subtle
+  accent glow on a small part of the frame.
+- **Trail draw-call optimization (measured, not guessed)**: the first
+  implementation rendered each trail-echo joint as its own `Mesh` (5 joints
+  × 3 steps = 15 extra draw calls). A CPU-throttled (6x, via Chrome DevTools
+  Protocol's `Emulation.setCPUThrottlingRate`) synthetic benchmark showed
+  Ghost (glow + trail enabled) costing roughly 3x the base avatar's own
+  per-frame render time — high enough to be worth optimizing before calling
+  the effect "done." Rewriting the trail as one `InstancedMesh` per step
+  (covering all 5 joints in a single draw call, 3 draws total instead of
+  15) cut the effect's total draw calls from 48 to 36 for the same visual
+  output (confirmed via a pixel-identical scripted render before/after) and
+  measurably reduced per-frame cost in the same benchmark. This is the same
+  instancing technique `Avatar`'s own skeleton-mode joint markers already
+  use.
+- **Draw-call budget**: with Ghost enabled, the scene renders the live
+  avatar (~17 draws), the ghost avatar (~17 draws, same geometry budget),
+  and up to 3 trail `InstancedMesh` draws (only the steps with enough
+  history to show) — about 34-37 draws total, comparable to
+  IndependentShadowEffect (~19) or a 2-clone CloneEffect (~34). Disabling
+  `trailEnabled` removes the 3 trail draws entirely at no cost (the meshes
+  are simply hidden, never destroyed).
+- **No per-frame allocation**: the ghost `Avatar`, its `TrackingHistory`,
+  and all `InstancedMesh`/material trail state are created exactly once, in
+  the constructor; `update()` only mutates existing transforms and
+  material properties (opacity, emissiveIntensity, per-instance matrices).
+- **Mobile guidance**: on a device where the DEBUG panel's FPS reading drops
+  with Ghost enabled, turning `trailEnabled` off is the cheapest single
+  lever (removes the 3 trail draw calls and their per-joint matrix updates
+  entirely) before reaching for a lower `glowStrength` or disabling Ghost
+  altogether — glow strength only affects a material property, not draw
+  calls, so it has no measurable performance cost on its own.

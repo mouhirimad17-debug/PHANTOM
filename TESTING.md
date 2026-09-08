@@ -101,6 +101,26 @@ yet.
   invalid `count`/`mode`/`opacity`/`delayStepMilliseconds`/`spreadDistance`
   passed to `configure()` is clamped or ignored rather than accepted
   verbatim.
+- `src/avatar/Avatar.test.ts` (ghost-mode additions) — `setDisplayMode('ghost')`
+  swaps in a transparent material; `setGlowIntensity()` scales that
+  material's `emissiveIntensity` up and down (including to exactly 0) and
+  has no effect on the other three display modes' materials.
+- `src/effects/GhostEffect.test.ts` — the ghost avatar shows/hides correctly
+  across enable/disable and tracking loss/recovery, including hiding every
+  trail step on loss; running an identical input sequence through two fresh
+  instances produces bit-identical output (position, breathing scale, and
+  drift Y) — proof there is no `Math.random()` anywhere in the path;
+  `configure({ opacity })`/`configure({ glowStrength })` are reflected
+  exactly in the ghost material's `opacity`/`emissiveIntensity`; a larger
+  `delayMilliseconds` reads further behind a moving target, and `0` matches
+  the live frame exactly; breathing scale stays within a small bounded range
+  around 1 (but actually varies, not frozen); vertical drift is nonzero but
+  stays under a small fraction of `bodyScale`; trail echoes become visible
+  once enough history exists when `trailEnabled`, stay fully hidden when
+  not, and a higher `trailStrength` produces a more opaque first-step
+  material; `reset()` restores defaults and hides everything; and invalid
+  `opacity`/`delayMilliseconds`/`glowStrength`/`trailStrength` values are
+  clamped to their documented ranges.
 
 These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
 transforms) — that must still be checked in a real/scripted browser, since
@@ -231,6 +251,61 @@ Independent Shadow phases, this proves the pooling, arrangement math, and
 mode behavior render correctly for the poses tested — it is not a
 substitute for judging how the effect feels against a real, continuously
 noisy camera feed. See the checklist below for that.
+
+## What was verified for Ghost (this phase)
+
+Same sandbox network restriction and approach as the Clone/Independent
+Shadow phases: the real, unmodified `SceneManager`, `TrackingManager`,
+`Avatar`, and `GhostEffect` modules driven directly with synthetic pose
+data in a real Chromium/WebGL context, rendering to a real canvas:
+
+1. **Readability over bright and dark backgrounds** (the explicit
+   requirement): the same ghost pose was rendered with the WebGL renderer's
+   own clear color set to pure white and then near-black (not just the
+   page's CSS background — `canvas.toDataURL()` only captures the canvas's
+   own pixel buffer, so the test paints an opaque color directly into the
+   render target to actually exercise this). The ghost's translucent
+   silhouette and glow accents are both clearly visible against either
+   background — normal blending keeps the body readable on white, and the
+   emissive glow reads clearly against black, confirming the material
+   design decision documented in ARCHITECTURE.md.
+2. **High glow, trail off**: `glowStrength: 2, trailEnabled: false` against
+   a dark background shows a brighter emissive accent with no trail
+   markers — confirms the trail toggle actually removes the trail rather
+   than just dimming it, and that a strong glow alone doesn't read as
+   "noisy" (no stray artifacts, just a brighter silhouette).
+3. **Trail on, bright background**: small glowing echo markers are visible
+   trailing the wrists/ankles/head without overwhelming the frame — a
+   restrained accent, not clutter.
+4. **Tracking lost**: setting `present: false` hides the ghost avatar and
+   every trail step; a `getObjectByName`-style internal check confirmed
+   `ghostAvatar.root.visible` flips from `true` to `false`.
+
+Zero console/page errors across all of the above.
+
+### Mobile performance check (this phase)
+
+Per the explicit "Test mobile performance" requirement, a synthetic
+benchmark (`Emulation.setCPUThrottlingRate` at 6x, via the Chrome DevTools
+Protocol, in a 400x800 viewport approximating a phone) compared 240 frames
+of the base avatar alone against the base avatar with Ghost enabled
+(`glowStrength: 1.5`, `trailEnabled: true`, `trailStrength: 1` — the
+heaviest configuration):
+
+- Before optimizing the trail (one `Mesh` per echoed joint): Ghost added
+  roughly 3x the baseline's per-frame render time.
+- After switching the trail to one `InstancedMesh` per step (see
+  ARCHITECTURE.md's performance section): total draw calls for the scene
+  dropped from 48 to 36, and per-frame time measurably improved, for
+  pixel-identical visual output (confirmed by re-running the visual check
+  above before and after and comparing the renders).
+
+This is a synthetic, software-rendered (headless Chromium/SwiftShader)
+measurement — the absolute millisecond figures are not representative of a
+real device's GPU-accelerated performance, but the *relative* comparison
+(baseline vs. Ghost, before vs. after the trail optimization) is meaningful
+and is what drove the InstancedMesh change. **This does not substitute for
+testing on a real phone** — see the manual checklist below.
 
 ## Manual verification checklist (run this in a real browser with a real camera)
 
@@ -492,6 +567,83 @@ ALL** button returns everything to defaults (disabled, count 3, SPREAD).
       FPS reading before and after enabling; see ARCHITECTURE.md's
       performance-considerations section for what to do if it does drop on
       a weaker device.
+
+## Manual verification: Ghost effect (this phase)
+
+Open the camera and tap **GHOST** to enable the effect — a panel with
+Opacity/Delay/Glow sliders and a TRAIL toggle appears.
+
+**Basic toggle and controls**
+
+- [ ] Tapping GHOST shows a translucent, glowing duplicate of your body; the
+      button visibly indicates it's active.
+- [ ] Tapping it again hides it immediately; the live avatar is unaffected.
+- [ ] Dragging the Opacity slider changes how translucent the ghost looks,
+      live.
+- [ ] Dragging the Delay slider changes how far behind your live movement
+      the ghost's pose sits — at 0 it should track your current pose
+      exactly (no lag); higher values should show a visible, fixed lag
+      (not a spring/chase — it reads as "sampling a moment ago," not
+      "catching up").
+- [ ] Dragging the Glow slider changes how bright the emissive accent looks,
+      from barely visible near 0 to a clearly brighter glow near the top
+      of the range.
+- [ ] Tapping TRAIL toggles the motion-trail echoes on/off; the button
+      label reflects the current state (TRAIL: ON / TRAIL: OFF).
+
+**Readability over different backgrounds**
+
+- [ ] Point the camera at a bright/white background (a wall, a window, a
+      piece of paper) — the ghost's silhouette should stay clearly visible,
+      not wash out or disappear.
+- [ ] Point the camera at a dark background (a shadowed room, dark
+      clothing/wall) — the ghost should still read clearly, with its glow
+      accent visible against the dark.
+- [ ] In both cases, the effect should look intentional — a "spectral"
+      duplicate — not garish, flickery, or distracting.
+
+**Signature behavior**
+
+- [ ] **Scale breathing.** While holding still, look closely — the ghost
+      should very subtly grow and shrink in a slow, calm rhythm. It should
+      read as "alive," not as an obvious pulsing animation.
+- [ ] **Vertical drift.** The ghost should drift up and down very slightly
+      over a few seconds, independent of your own movement — subtle enough
+      that you have to watch for it, not a bounce.
+- [ ] **Delayed pose** (with Delay above 0). Move steadily, then stop. The
+      ghost should visibly be a few pose-samples behind you the whole time
+      it's moving, then also stop — matching your position from a moment
+      ago, not chasing you.
+- [ ] **Trail** (with TRAIL on). Move an arm or a leg — small glowing echo
+      markers should trail briefly behind your wrists/ankles/head, fading
+      out further back. They should read as a subtle motion accent, not
+      clutter.
+- [ ] **Turning.** Turn your body left/right — the ghost should turn with
+      you (on the same delay setting), staying recognizably attached to
+      your position.
+
+**Guardrails (things that must never happen)**
+
+- [ ] The ghost never flickers, strobes, or looks glitchy — all motion
+      (breathing, drift, trail fade) should look smooth and deliberate.
+- [ ] The ghost never becomes fully invisible against either a bright or a
+      dark background at the default settings.
+- [ ] The effect never looks "noisy" — no overwhelming glow, no excessive
+      trail clutter, even with Glow and the trail both at their maximum.
+- [ ] Tracking loss (step out of frame) hides the ghost and its trail
+      completely; stepping back in resumes correctly without a stale pose
+      flash.
+
+**Mobile performance**
+
+- [ ] With DEBUG open, compare the FPS reading with GHOST off vs. on
+      (default settings, then with TRAIL on and Glow near maximum) on the
+      actual mobile device being tested — it should stay smooth
+      (comparable to CLONE at a similar body count, per ARCHITECTURE.md's
+      draw-call budget).
+- [ ] If FPS drops noticeably on a given device with GHOST + TRAIL both on,
+      turn TRAIL off first (the documented cheapest lever) and confirm FPS
+      recovers before concluding the device can't handle the effect at all.
 
 ## Mobile-specific checks
 

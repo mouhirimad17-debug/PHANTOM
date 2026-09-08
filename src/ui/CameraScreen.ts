@@ -13,6 +13,11 @@ export interface CameraScreenCallbacks {
   onCloneCountChange: (count: CloneCount) => void;
   onCloneModeChange: (mode: CloneMode) => void;
   onCloneResetAll: () => void;
+  onGhostToggle: (active: boolean) => void;
+  onGhostOpacityChange: (value: number) => void;
+  onGhostDelayChange: (value: number) => void;
+  onGhostGlowChange: (value: number) => void;
+  onGhostTrailToggle: (trailEnabled: boolean) => void;
 }
 
 export interface DebugStats {
@@ -60,9 +65,15 @@ export class CameraScreen {
   );
   private readonly cloneModeBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-clone-mode]'));
 
+  private readonly ghostToggleBtn = requireElement<HTMLButtonElement>('ghost-toggle-btn');
+  private readonly ghostPanel = requireElement<HTMLElement>('ghost-panel');
+  private readonly ghostTrailToggleBtn = requireElement<HTMLButtonElement>('ghost-trail-toggle-btn');
+
   private debugVisible = false;
   private independentActive = false;
   private cloneActive = false;
+  private ghostActive = false;
+  private ghostTrailActive = true;
 
   constructor(callbacks: CameraScreenCallbacks) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
@@ -71,6 +82,9 @@ export class CameraScreen {
     const errorBackBtn = requireElement<HTMLButtonElement>('camera-error-back-btn');
     const sensitivitySlider = requireElement<HTMLInputElement>('shadow-sensitivity-slider');
     const cloneResetAllBtn = requireElement<HTMLButtonElement>('clone-reset-all-btn');
+    const ghostOpacitySlider = requireElement<HTMLInputElement>('ghost-opacity-slider');
+    const ghostDelaySlider = requireElement<HTMLInputElement>('ghost-delay-slider');
+    const ghostGlowSlider = requireElement<HTMLInputElement>('ghost-glow-slider');
 
     backBtn.addEventListener('click', () => callbacks.onBack());
     errorBackBtn.addEventListener('click', () => callbacks.onBack());
@@ -113,6 +127,24 @@ export class CameraScreen {
       this.setSegmentedPressed(this.cloneCountBtns, this.cloneCountBtns.find((b) => b.dataset['cloneCount'] === '3'));
       this.setSegmentedPressed(this.cloneModeBtns, this.cloneModeBtns.find((b) => b.dataset['cloneMode'] === 'SPREAD'));
     });
+
+    this.ghostToggleBtn.addEventListener('click', () => {
+      this.setGhostActive(!this.ghostActive);
+      callbacks.onGhostToggle(this.ghostActive);
+    });
+    ghostOpacitySlider.addEventListener('input', () => {
+      callbacks.onGhostOpacityChange(Number(ghostOpacitySlider.value));
+    });
+    ghostDelaySlider.addEventListener('input', () => {
+      callbacks.onGhostDelayChange(Number(ghostDelaySlider.value));
+    });
+    ghostGlowSlider.addEventListener('input', () => {
+      callbacks.onGhostGlowChange(Number(ghostGlowSlider.value));
+    });
+    this.ghostTrailToggleBtn.addEventListener('click', () => {
+      this.setGhostTrailActive(!this.ghostTrailActive);
+      callbacks.onGhostTrailToggle(this.ghostTrailActive);
+    });
   }
 
   private setCloneActive(active: boolean): void {
@@ -126,6 +158,19 @@ export class CameraScreen {
     for (const btn of group) {
       btn.setAttribute('aria-pressed', String(btn === selected));
     }
+  }
+
+  private setGhostActive(active: boolean): void {
+    this.ghostActive = active;
+    this.ghostToggleBtn.classList.toggle('active', active);
+    this.ghostToggleBtn.setAttribute('aria-pressed', String(active));
+    this.ghostPanel.classList.toggle('hidden', !active);
+  }
+
+  private setGhostTrailActive(active: boolean): void {
+    this.ghostTrailActive = active;
+    this.ghostTrailToggleBtn.setAttribute('aria-pressed', String(active));
+    this.ghostTrailToggleBtn.textContent = active ? 'TRAIL: ON' : 'TRAIL: OFF';
   }
 
   getContainer(): HTMLElement {
@@ -147,6 +192,8 @@ export class CameraScreen {
     this.independentToggleBtn.classList.remove('active');
     this.independentToggleBtn.setAttribute('aria-pressed', 'false');
     this.setCloneActive(false);
+    this.setGhostActive(false);
+    this.setGhostTrailActive(true); // matches DEFAULT_GHOST_PARAMS.trailEnabled
   }
 
   showLoading(): void {

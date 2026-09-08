@@ -295,6 +295,51 @@ body {
   font-size: 0.75rem;
 }
 
+/* Ghost controls: stacked below the clone panel in the same right-hand
+   column (a fixed offset rather than dynamic layout, matching the rest of
+   this file's simple absolute positioning) — shown whenever GHOST is
+   toggled on. */
+.ghost-panel {
+  left: auto;
+  right: 1rem;
+  top: calc(max(1rem, env(safe-area-inset-top)) + 56px + 232px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 200px;
+}
+
+.ghost-panel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.ghost-panel-row label {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ghost-panel-row input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.ghost-trail-btn {
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 0.9rem;
+  font-size: 0.75rem;
+  margin-top: 0.1rem;
+}
+
+.ghost-trail-btn[aria-pressed='true'] {
+  background: var(--accent);
+  color: #00201a;
+}
+
 .debug-row-slider input[type='range'] {
   width: 100%;
   accent-color: var(--accent);

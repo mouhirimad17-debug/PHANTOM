@@ -10,6 +10,7 @@ import { DebugSkeleton } from '../rendering/DebugSkeleton';
 import { Avatar } from '../avatar/Avatar';
 import { IndependentShadowEffect } from '../effects/IndependentShadowEffect';
 import { CloneEffect, type CloneCount, type CloneMode } from '../effects/CloneEffect';
+import { GhostEffect } from '../effects/GhostEffect';
 import { LandingScreen } from '../ui/LandingScreen';
 import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
@@ -18,6 +19,7 @@ import { isWebGLAvailable } from '../utils/webgl';
 
 const NO_EFFECT_LABEL = 'None (base avatar)';
 const INDEPENDENT_SHADOW_LABEL = 'Independent Shadow';
+const GHOST_LABEL = 'Ghost';
 
 // Pose inference is throttled independently of the render loop (which stays
 // at display refresh rate) so a slow model never blocks rendering/UI input.
@@ -46,6 +48,7 @@ export class App {
   private avatar: Avatar | null = null;
   private independentShadowEffect: IndependentShadowEffect | null = null;
   private cloneEffect: CloneEffect | null = null;
+  private ghostEffect: GhostEffect | null = null;
 
   private facing: CameraFacing = 'user';
   private lastDetectMs = -Infinity;
@@ -72,6 +75,14 @@ export class App {
       onCloneCountChange: (count: CloneCount) => this.cloneEffect?.configure({ count }),
       onCloneModeChange: (mode: CloneMode) => this.cloneEffect?.configure({ mode }),
       onCloneResetAll: () => this.cloneEffect?.reset(),
+      onGhostToggle: (active) => {
+        if (active) this.ghostEffect?.enable();
+        else this.ghostEffect?.disable();
+      },
+      onGhostOpacityChange: (value) => this.ghostEffect?.configure({ opacity: value }),
+      onGhostDelayChange: (value) => this.ghostEffect?.configure({ delayMilliseconds: value }),
+      onGhostGlowChange: (value) => this.ghostEffect?.configure({ glowStrength: value }),
+      onGhostTrailToggle: (trailEnabled) => this.ghostEffect?.configure({ trailEnabled }),
     });
     this.landingScreen = new LandingScreen({
       onEnterCamera: () => void this.enterCamera(),
@@ -87,9 +98,10 @@ export class App {
       const avatar = new Avatar(sceneManager.scene);
       const independentShadowEffect = new IndependentShadowEffect(sceneManager.scene, sceneManager.floor.position.y);
       const cloneEffect = new CloneEffect(sceneManager.scene);
+      const ghostEffect = new GhostEffect(sceneManager.scene);
 
       sceneManager.onFrame((delta) =>
-        this.handleFrame(delta, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect),
+        this.handleFrame(delta, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect, ghostEffect),
       );
 
       this.sceneManager = sceneManager;
@@ -98,6 +110,7 @@ export class App {
       this.avatar = avatar;
       this.independentShadowEffect = independentShadowEffect;
       this.cloneEffect = cloneEffect;
+      this.ghostEffect = ghostEffect;
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
@@ -155,6 +168,7 @@ export class App {
     this.avatar?.reset();
     this.independentShadowEffect?.reset();
     this.cloneEffect?.reset();
+    this.ghostEffect?.reset();
     this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
@@ -171,6 +185,7 @@ export class App {
     avatar: Avatar,
     independentShadowEffect: IndependentShadowEffect,
     cloneEffect: CloneEffect,
+    ghostEffect: GhostEffect,
   ): void {
     this.fpsCounter.update(deltaSeconds);
 
@@ -178,7 +193,7 @@ export class App {
       const now = performance.now();
       if (now - this.lastDetectMs >= this.detectIntervalMs) {
         this.lastDetectMs = now;
-        this.runDetection(now, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect);
+        this.runDetection(now, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect, ghostEffect);
       }
     }
 
@@ -194,6 +209,7 @@ export class App {
       const { count, mode } = cloneEffect.getParams();
       activeEffectLabels.push(`Clone (${mode} x${count})`);
     }
+    if (ghostEffect.isEnabled()) activeEffectLabels.push(GHOST_LABEL);
 
     this.cameraScreen.updateDebugStats({
       fps: this.fpsCounter.getFps(),
@@ -217,6 +233,7 @@ export class App {
     avatar: Avatar,
     independentShadowEffect: IndependentShadowEffect,
     cloneEffect: CloneEffect,
+    ghostEffect: GhostEffect,
   ): void {
     const video = this.cameraScreen.videoElement;
     let raw: RawPoseFrame | null;
@@ -251,6 +268,7 @@ export class App {
     this.lastEffectUpdateMs = nowMs;
     independentShadowEffect.update(effectDeltaSeconds, frame);
     cloneEffect.update(effectDeltaSeconds, frame);
+    ghostEffect.update(effectDeltaSeconds, frame);
   }
 
   private handleFatalError(err: unknown): void {

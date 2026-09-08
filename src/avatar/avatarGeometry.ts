@@ -1,4 +1,4 @@
-import { CapsuleGeometry, Color, MeshStandardMaterial, SphereGeometry } from 'three';
+import { CapsuleGeometry, Color, MeshStandardMaterial, NormalBlending, SphereGeometry } from 'three';
 
 // PHANTOM's established accent color (already used by the DEBUG skeleton
 // overlay and the UI) — reused here so the avatar reads as part of the same
@@ -83,5 +83,40 @@ export function createShadowMaterial(): MeshStandardMaterial {
     transparent: true,
     opacity: 0.5,
     depthWrite: false,
+  });
+}
+
+/**
+ * Baseline emissive intensity for the ghost material before
+ * `Avatar.setGlowIntensity()`'s multiplier is applied — see GhostEffect's
+ * `glowStrength` parameter.
+ */
+export const BASE_GHOST_EMISSIVE_INTENSITY = 0.55;
+
+/**
+ * Translucent, glow-accented variant for effects that render a "ghost"-style
+ * duplicate (see effects/GhostEffect.ts). Deliberately uses normal (not
+ * additive) alpha blending: additive blending adds light on top of whatever
+ * is already behind it, which reads as a strong highlight over a dark
+ * background but nearly disappears over a bright one (there's little
+ * headroom left to add to). Normal blending's opacity-based compositing
+ * keeps the ghost's silhouette readable at a consistent strength regardless
+ * of what's behind it, while the emissive channel still supplies the
+ * "glowing" accent look on top of that base translucency —
+ * `glowStrength` scales `emissiveIntensity` only, never the blend mode.
+ * `depthWrite: false` reuses the same cheap soft-seam trick as the shadow
+ * material above.
+ */
+export function createGhostMaterial(): MeshStandardMaterial {
+  return new MeshStandardMaterial({
+    color: 0x0c2622,
+    roughness: 0.3,
+    metalness: 0,
+    emissive: new Color(ACCENT_COLOR),
+    emissiveIntensity: BASE_GHOST_EMISSIVE_INTENSITY,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,
+    blending: NormalBlending,
   });
 }
