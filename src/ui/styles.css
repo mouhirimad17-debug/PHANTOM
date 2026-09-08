@@ -151,17 +151,23 @@ body {
   transform: none;
 }
 
+/*
+ * IMPORTANT: #scene-canvas is intentionally NEVER CSS-mirrored, unlike
+ * #camera-video above. Mirroring for the front camera is applied exactly
+ * once, in software, inside transformLandmarkForRender() (see
+ * tracking/CoordinateMapper.ts) before the skeleton is drawn into this
+ * canvas. If this element also got `transform: scaleX(-1)`, the skeleton
+ * would be mirrored twice (once by CSS, once in the coordinate math) and
+ * would move in the OPPOSITE direction from the visibly-mirrored video —
+ * this was the exact cause of a real bug here. Do not add a mirror
+ * transform to this element.
+ */
 #scene-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
-  transform: scaleX(-1);
-}
-
-#scene-canvas.unmirrored {
-  transform: none;
 }
 
 #camera-topbar {

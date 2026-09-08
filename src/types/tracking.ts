@@ -25,3 +25,18 @@ export interface TrackingFrame {
   /** True while inside the grace period after tracking was lost (holding last known pose). */
   lost: boolean;
 }
+
+/**
+ * Developer-only snapshot of the mirroring pipeline for one selected
+ * landmark, for the temporary DEBUG-panel diagnostic. Not used by any
+ * production rendering path.
+ */
+export interface MirrorDiagnostics {
+  /** Which landmark index this snapshot is for (see utils/poseLandmarks.ts). */
+  landmarkIndex: number;
+  /** Raw MediaPipe x, unmirrored, straight from the model. */
+  rawX: number;
+  /** x after transformLandmarkForRender — what the skeleton actually uses. */
+  renderX: number;
+  cameraMirrored: boolean;
+}

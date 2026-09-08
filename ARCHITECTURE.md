@@ -66,10 +66,20 @@ rendering — the skeleton simply updates less often on weak devices.
   are re-normalized against the visible crop rect, not the raw video frame,
   so the overlay stays aligned regardless of the camera's native aspect
   ratio vs. the viewport's.
-- **Mirroring**: the front camera is mirrored via CSS (`transform:
-  scaleX(-1)`) on both the `<video>` and the overlay `<canvas>` for a
-  natural "mirror" feel; `TrackingManager.setMirrored()` keeps the
-  coordinate mapping in sync so the overlay never drifts from the video.
+- **Mirroring (single source of truth: `cameraMirrored: boolean`)**: the
+  front camera is mirrored via CSS (`transform: scaleX(-1)`) on the
+  `<video>` element **only**. The overlay `<canvas>` is deliberately never
+  CSS-mirrored (see the comment on `#scene-canvas` in `ui/styles.css`) —
+  instead, `transformLandmarkForRender()` (`tracking/transformLandmarkForRender.ts`)
+  applies the equivalent flip in software, once, inside
+  `CoordinateMapper.mapJoint()`, before the coordinate is ever turned into a
+  Three.js world position. `App.enterCamera()` computes `cameraMirrored`
+  once (`facing === 'user'`) and passes it to both
+  `TrackingManager.setCameraMirrored()` (software mirror, for the canvas)
+  and `CameraScreen.setMirrored()` (CSS mirror, for the video) — the two
+  must never both mirror the same element, or the skeleton moves opposite
+  to the visible body. A `DEBUG`-panel diagnostic (RAW X / RENDER X /
+  MIRRORED for the right wrist) makes this pipeline inspectable at runtime.
 - **No per-frame allocation**: `TrackingFrame`'s 33 joints and `DebugSkeleton`'s
   `InstancedMesh`/`BufferAttribute` are allocated once and mutated in place
   every frame (see the "reused scratch vector" pattern in

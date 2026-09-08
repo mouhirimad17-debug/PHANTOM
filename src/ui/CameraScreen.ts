@@ -11,6 +11,8 @@ export interface DebugStats {
   visionStatus: string;
   poseStatus: string;
   confidence: number | null;
+  /** Temporary mirroring diagnostic for one landmark; null when no body is tracked. */
+  mirrorDiagnostics: { rawX: number; renderX: number; cameraMirrored: boolean } | null;
 }
 
 export class CameraScreen {
@@ -26,6 +28,9 @@ export class CameraScreen {
   private readonly visionStatusEl = requireElement<HTMLElement>('vision-status-value');
   private readonly poseStatusEl = requireElement<HTMLElement>('pose-status-value');
   private readonly confidenceEl = requireElement<HTMLElement>('confidence-value');
+  private readonly rawXEl = requireElement<HTMLElement>('raw-x-value');
+  private readonly renderXEl = requireElement<HTMLElement>('render-x-value');
+  private readonly mirroredEl = requireElement<HTMLElement>('mirrored-value');
 
   private debugVisible = false;
 
@@ -77,9 +82,16 @@ export class CameraScreen {
     this.errorOverlay.classList.add('hidden');
   }
 
-  setMirrored(mirrored: boolean): void {
-    this.videoElement.classList.toggle('unmirrored', !mirrored);
-    this.canvasElement.classList.toggle('unmirrored', !mirrored);
+  /**
+   * Mirrors the <video> element for the front-camera "mirror" UX via CSS.
+   * The <canvas> is deliberately left untouched here — its content
+   * (the skeleton) is mirrored in software instead, in the coordinate
+   * transform pipeline (see transformLandmarkForRender). Applying a CSS
+   * mirror to both would double-flip the canvas and make the skeleton
+   * move opposite to the visible body.
+   */
+  setMirrored(cameraMirrored: boolean): void {
+    this.videoElement.classList.toggle('unmirrored', !cameraMirrored);
   }
 
   updateDebugStats(stats: DebugStats): void {
@@ -88,5 +100,10 @@ export class CameraScreen {
     this.visionStatusEl.textContent = stats.visionStatus;
     this.poseStatusEl.textContent = stats.poseStatus;
     this.confidenceEl.textContent = stats.confidence === null ? '-' : `${Math.round(stats.confidence * 100)}%`;
+
+    const diag = stats.mirrorDiagnostics;
+    this.rawXEl.textContent = diag ? diag.rawX.toFixed(3) : '-';
+    this.renderXEl.textContent = diag ? diag.renderX.toFixed(3) : '-';
+    this.mirroredEl.textContent = diag ? String(diag.cameraMirrored) : '-';
   }
 }

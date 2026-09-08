@@ -1,12 +1,15 @@
 import { Vector3, type PerspectiveCamera } from 'three';
-import { POSE_LANDMARK_COUNT, type TrackingFrame } from '../types/tracking';
+import { POSE_LANDMARK_COUNT, type MirrorDiagnostics, type TrackingFrame } from '../types/tracking';
 import type { RawPoseFrame } from '../types/vision';
 import { CoordinateMapper, MAPPER_SCRATCH } from './CoordinateMapper';
 import { LandmarkSmoother } from './LandmarkSmoother';
+import { PoseLandmark } from '../utils/poseLandmarks';
 
 const SMOOTHING_ALPHA = 0.45;
 /** How long to keep holding the last known pose after tracking drops before declaring it lost. */
 const LOSS_GRACE_MS = 600;
+/** Landmark tracked by the temporary DEBUG-panel mirroring diagnostic. */
+const DIAGNOSTIC_LANDMARK_INDEX: number = PoseLandmark.RIGHT_WRIST;
 
 /**
  * Turns raw per-frame MediaPipe output into a stable TrackingFrame: smoothed,
@@ -20,6 +23,7 @@ export class TrackingManager {
   private readonly smoother = new LandmarkSmoother(SMOOTHING_ALPHA);
   private readonly frame: TrackingFrame;
   private lastSeenAtMs = -Infinity;
+  private diagnostics: MirrorDiagnostics | null = null;
 
   constructor(camera: PerspectiveCamera) {
     this.mapper = new CoordinateMapper(camera);
@@ -36,8 +40,8 @@ export class TrackingManager {
     this.mapper.setVideoAspect(aspect);
   }
 
-  setMirrored(mirrored: boolean): void {
-    this.mapper.setMirrored(mirrored);
+  setCameraMirrored(cameraMirrored: boolean): void {
+    this.mapper.setCameraMirrored(cameraMirrored);
   }
 
   notifyViewportChanged(): void {
@@ -70,6 +74,17 @@ export class TrackingManager {
       this.frame.lost = false;
       this.frame.confidence = visibleCount > 0 ? totalVisibility / visibleCount : 0;
       this.frame.timestampMs = raw.timestampMs;
+
+      const diagnosticLandmark = raw.landmarks[DIAGNOSTIC_LANDMARK_INDEX];
+      this.diagnostics = diagnosticLandmark
+        ? {
+            landmarkIndex: DIAGNOSTIC_LANDMARK_INDEX,
+            rawX: diagnosticLandmark.x,
+            renderX: this.mapper.computeRenderX(diagnosticLandmark.x),
+            cameraMirrored: this.mapper.isCameraMirrored(),
+          }
+        : null;
+
       return this.frame;
     }
 
@@ -90,11 +105,17 @@ export class TrackingManager {
     return this.frame;
   }
 
+  /** Temporary developer diagnostic (see MirrorDiagnostics); null when no body is tracked. */
+  getMirrorDiagnostics(): Readonly<MirrorDiagnostics> | null {
+    return this.diagnostics;
+  }
+
   reset(): void {
     this.smoother.reset();
     this.lastSeenAtMs = -Infinity;
     this.frame.present = false;
     this.frame.lost = false;
     this.frame.confidence = 0;
+    this.diagnostics = null;
   }
 }

@@ -97,9 +97,15 @@ export class App {
 
       const video = this.cameraScreen.videoElement;
       trackingManager.setVideoAspect(video.videoWidth / video.videoHeight);
-      const mirrored = this.facing === 'user';
-      trackingManager.setMirrored(mirrored);
-      this.cameraScreen.setMirrored(mirrored);
+      // Single source of truth for mirroring: the front camera is displayed
+      // mirrored (CSS, on <video> only — see CameraScreen.setMirrored), and
+      // the skeleton's coordinate math is told the same boolean so it
+      // applies the matching software mirror exactly once (see
+      // transformLandmarkForRender). Never mirror both the CSS layer and
+      // the canvas — see the comment on #scene-canvas in styles.css.
+      const cameraMirrored = this.facing === 'user';
+      trackingManager.setCameraMirrored(cameraMirrored);
+      this.cameraScreen.setMirrored(cameraMirrored);
 
       this.cameraScreen.hideLoading();
       sceneManager.start();
@@ -130,11 +136,15 @@ export class App {
     }
 
     const frame = trackingManager.getFrame();
+    const diagnostics = trackingManager.getMirrorDiagnostics();
     this.cameraScreen.updateDebugStats({
       fps: this.fpsCounter.getFps(),
       visionStatus: this.poseVision.getStatus(),
       poseStatus: this.visionDetectionFailed ? 'error' : frame.present ? 'tracking' : frame.lost ? 'lost' : 'no body',
       confidence: frame.present ? frame.confidence : null,
+      mirrorDiagnostics: diagnostics
+        ? { rawX: diagnostics.rawX, renderX: diagnostics.renderX, cameraMirrored: diagnostics.cameraMirrored }
+        : null,
     });
   }
 

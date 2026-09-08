@@ -1,19 +1,39 @@
 # Testing
 
-There is currently **no automated test suite** — the foundation stage was
-verified with type-checking, a production build, and manual/scripted
-browser verification. This document describes both what was checked and how
-to re-check it by hand.
+There is a small, targeted **vitest** suite covering the coordinate/mirroring
+math (the one area that has already had a real, non-obvious bug — see
+`ARCHITECTURE.md`'s mirroring section). Everything else is still verified
+with type-checking, a production build, and manual/scripted browser
+verification. This document describes both what's automated and how to
+verify the rest by hand.
 
 ## Automated checks that exist
 
 ```bash
 npx tsc --noEmit   # strict type-check, no `any`-shaped escape hatches
+npm test           # vitest run — coordinate/mirroring transform tests
 npm run build      # type-check + production bundle (fails on build errors)
 ```
 
-Run both after any change. Neither currently runs as CI — there is no CI
-configured yet.
+Run all three after any change to the tracking/coordinate-mapping code in
+particular. None of these currently run as CI — there is no CI configured
+yet.
+
+### What the unit tests cover
+
+- `src/tracking/transformLandmarkForRender.test.ts` — the pure mirror
+  function in isolation, at x = 0, 0.25, 0.5, 0.75, 1, for both mirrored and
+  non-mirrored, plus a center-invariance and involution check.
+- `src/tracking/CoordinateMapper.test.ts` — the same behavior integrated
+  through `mapJoint()`'s full pipeline (crop + mirror + perspective
+  projection), confirming a raw landmark lands on the opposite side of
+  center when mirrored, that the vertical axis is never affected, and that
+  `computeRenderX()` (used by the debug diagnostic) agrees with the value
+  `mapJoint()` actually renders with.
+
+These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
+transforms) — that must still be checked in a real/scripted browser, since
+it's DOM/CSS state, not application logic.
 
 ## What was verified for the foundation stage
 
@@ -55,6 +75,17 @@ README's HTTPS note):
       overlaid on your body and tracks your movement in real time.
 - [ ] Move toward/away from the camera — the skeleton should scale/shift
       plausibly with you, not float independently.
+- [ ] **Mirroring (regression check):** raise your right hand — the
+      skeleton's corresponding hand (on the mirrored, "selfie" video) must
+      move the same direction as your visible hand, not the opposite one.
+      Move your whole body left/right — the skeleton must move the same
+      screen-direction as your visible body. If it moves opposite, the
+      canvas has picked up a CSS mirror again — check `#scene-canvas` in
+      `ui/styles.css` has no `transform`.
+- [ ] If a rear-camera device is available, switch to it (once a UI trigger
+      exists — see TODO.md) and repeat the mirroring check: the rear camera
+      is *not* mirrored, and the skeleton must still track in the same
+      direction as the (unmirrored) visible body.
 - [ ] Move to the edge of frame / step out of frame — the skeleton should
       hold briefly (grace period) then disappear; stepping back in should
       resume tracking without a stale/frozen pose.
