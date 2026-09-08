@@ -8,17 +8,15 @@ import { TrackingHistory } from '../tracking/TrackingHistory';
 import { SceneManager } from '../rendering/SceneManager';
 import { DebugSkeleton } from '../rendering/DebugSkeleton';
 import { Avatar } from '../avatar/Avatar';
+import { IndependentShadowEffect } from '../effects/IndependentShadowEffect';
 import { LandingScreen } from '../ui/LandingScreen';
 import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
 import { clamp } from '../utils/math';
 import { isWebGLAvailable } from '../utils/webgl';
 
-// No visual Effect (enable/disable/update/reset) exists yet (see TODO.md) —
-// this is a placeholder label for the debug overlay's "current effect" row,
-// to be replaced once the Effect interface and its implementations land.
-// The Avatar itself is the base character, not an "effect".
-const CURRENT_EFFECT_LABEL = 'None (base avatar)';
+const NO_EFFECT_LABEL = 'None (base avatar)';
+const INDEPENDENT_SHADOW_LABEL = 'Independent Shadow';
 
 // Pose inference is throttled independently of the render loop (which stays
 // at display refresh rate) so a slow model never blocks rendering/UI input.
@@ -45,12 +43,14 @@ export class App {
   private trackingManager: TrackingManager | null = null;
   private debugSkeleton: DebugSkeleton | null = null;
   private avatar: Avatar | null = null;
+  private independentShadowEffect: IndependentShadowEffect | null = null;
 
   private facing: CameraFacing = 'user';
   private lastDetectMs = -Infinity;
   private detectIntervalMs = MIN_DETECT_INTERVAL_MS;
   private avgDetectDurationMs = 0;
   private lastInferenceDurationMs: number | null = null;
+  private lastEffectUpdateMs = -Infinity;
   private visionDetectionFailed = false;
 
   constructor() {
@@ -58,6 +58,11 @@ export class App {
       onBack: () => this.exitCamera(),
       onRetry: () => void this.enterCamera(),
       onDebugToggle: (visible) => this.debugSkeleton?.setVisible(visible),
+      onIndependentShadowToggle: (active) => {
+        if (active) this.independentShadowEffect?.enable();
+        else this.independentShadowEffect?.disable();
+      },
+      onIndependentShadowSensitivity: (value) => this.independentShadowEffect?.configure({ followStrength: value }),
     });
     this.landingScreen = new LandingScreen({
       onEnterCamera: () => void this.enterCamera(),
@@ -71,13 +76,17 @@ export class App {
       const trackingManager = new TrackingManager(sceneManager.camera);
       const debugSkeleton = new DebugSkeleton(sceneManager.scene);
       const avatar = new Avatar(sceneManager.scene);
+      const independentShadowEffect = new IndependentShadowEffect(sceneManager.scene, sceneManager.floor.position.y);
 
-      sceneManager.onFrame((delta) => this.handleFrame(delta, trackingManager, debugSkeleton, avatar));
+      sceneManager.onFrame((delta) =>
+        this.handleFrame(delta, trackingManager, debugSkeleton, avatar, independentShadowEffect),
+      );
 
       this.sceneManager = sceneManager;
       this.trackingManager = trackingManager;
       this.debugSkeleton = debugSkeleton;
       this.avatar = avatar;
+      this.independentShadowEffect = independentShadowEffect;
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
@@ -133,10 +142,12 @@ export class App {
     this.camera.stop();
     this.trackingManager?.reset();
     this.avatar?.reset();
+    this.independentShadowEffect?.reset();
     this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
     this.lastInferenceDurationMs = null;
+    this.lastEffectUpdateMs = -Infinity;
     this.cameraScreen.hide();
     this.landingScreen.show();
   }
@@ -146,6 +157,7 @@ export class App {
     trackingManager: TrackingManager,
     debugSkeleton: DebugSkeleton,
     avatar: Avatar,
+    independentShadowEffect: IndependentShadowEffect,
   ): void {
     this.fpsCounter.update(deltaSeconds);
 
@@ -153,7 +165,7 @@ export class App {
       const now = performance.now();
       if (now - this.lastDetectMs >= this.detectIntervalMs) {
         this.lastDetectMs = now;
-        this.runDetection(now, trackingManager, debugSkeleton, avatar);
+        this.runDetection(now, trackingManager, debugSkeleton, avatar, independentShadowEffect);
       }
     }
 
@@ -170,7 +182,7 @@ export class App {
       confidence: frame.present ? frame.confidence : null,
       landmarkCount,
       landmarkTotal: frame.landmarks.length,
-      currentEffect: CURRENT_EFFECT_LABEL,
+      currentEffect: independentShadowEffect.isEnabled() ? INDEPENDENT_SHADOW_LABEL : NO_EFFECT_LABEL,
       inferenceTimeMs: this.lastInferenceDurationMs,
       mirrorDiagnostics: diagnostics
         ? { rawX: diagnostics.rawX, renderX: diagnostics.renderX, cameraMirrored: diagnostics.cameraMirrored }
@@ -183,6 +195,7 @@ export class App {
     trackingManager: TrackingManager,
     debugSkeleton: DebugSkeleton,
     avatar: Avatar,
+    independentShadowEffect: IndependentShadowEffect,
   ): void {
     const video = this.cameraScreen.videoElement;
     let raw: RawPoseFrame | null;
@@ -210,6 +223,12 @@ export class App {
     debugSkeleton.update(frame);
     avatar.updateFromTracking(frame);
     this.trackingHistory.push(frame);
+
+    // The effect's spring integrator needs real elapsed time, independent of
+    // the (adaptively throttled) detection interval above.
+    const effectDeltaSeconds = this.lastEffectUpdateMs === -Infinity ? 0 : (nowMs - this.lastEffectUpdateMs) / 1000;
+    this.lastEffectUpdateMs = nowMs;
+    independentShadowEffect.update(effectDeltaSeconds, frame);
   }
 
   private handleFatalError(err: unknown): void {

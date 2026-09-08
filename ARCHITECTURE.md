@@ -15,7 +15,8 @@ src/
   rendering/  Three.js scene/camera/renderer/lighting/floor + render loop
   avatar/     procedural humanoid mannequin (capsule-primitive limbs,
               quaternion-oriented from tracked joint positions each frame)
-  effects/    (not yet implemented — Shadow/Clone/Ghost/Reverse/Delay)
+  effects/    Effect interface + implementations. First: IndependentShadowEffect
+              (Clone/Ghost/Reverse/Delay not yet implemented)
   recording/  (not yet implemented — canvas capture -> video file)
   ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
   utils/      shared, dependency-free helpers (math, DOM, FPS, pose landmark constants)
@@ -120,8 +121,12 @@ rendering — the skeleton simply updates less often on weak devices.
 - **TrackingHistory (`tracking/TrackingHistory.ts`)**: a fixed-capacity ring
   buffer of `TrackingFrame` snapshots (`push`/`getLatest`/`getAtOffset`/
   `clear`, configurable logical duration), for effects that need to look
-  backward in time (Delay, Reverse). `App.ts` pushes into it after every
-  tracking update; nothing reads from it yet since no effect exists.
+  backward in time. `App.ts` owns one top-level instance it pushes into
+  after every tracking update (still unread, reserved for a future Reverse
+  effect or debug tooling); `IndependentShadowEffect` owns a separate,
+  private instance of the same class for its own delay — effects that need
+  history are expected to own their instance rather than share App's, so
+  each effect's delay window is independent.
 - **No per-frame allocation**: `TrackingFrame`'s object graph — landmarks,
   named joint aliases, derived-center vectors — is built exactly once by
   `tracking/trackingFrame.ts: createTrackingFrame()` and mutated in place
@@ -166,19 +171,23 @@ this; `Avatar.setRotation()` (the whole-avatar override) uses Euler angles
 instead, which is fine there because it's one independent transform, not a
 chained sequence.
 
-- **Display modes**: `setDisplayMode('mannequin' | 'skeleton')` swaps which
-  of two pre-built materials each mesh uses (dark/neutral + soft emissive
-  for mannequin; brighter, thinner for skeleton) and toggles the head
-  mesh / joint-marker `InstancedMesh` visibility — it never creates or
-  destroys meshes.
+- **Display modes**: `setDisplayMode('mannequin' | 'skeleton' | 'shadow')`
+  swaps which of three pre-built materials each mesh uses (dark/neutral +
+  soft emissive for mannequin; brighter, thinner for skeleton; near-black,
+  transparent, barely-emissive for shadow — see
+  `effects/IndependentShadowEffect.ts`) and toggles head-mesh/joint-marker
+  visibility — it never creates or destroys meshes. 'shadow' reuses the
+  full-bodied mannequin radius (only the material differs); flattening is
+  the driving effect's job, not a thinner geometry.
 - **Reuse**: `avatar/avatarGeometry.ts` holds ONE shared capsule geometry
   (used by all 15 limbs, differentiated only by each mesh's own
   position/quaternion/scale) and ONE shared sphere geometry (head + joint
-  markers), as module-level singletons shared by every `Avatar` instance.
-  Materials are the one exception — each `Avatar` builds its own pair,
-  because `setOpacity()` must affect one instance without bleeding into
-  every other instance sharing the scene (relevant once Clone/Ghost create
-  multiple avatars).
+  markers + a driving effect's own contact-shadow blobs), as module-level
+  singletons shared by every `Avatar` instance. Materials are the one
+  exception — each `Avatar` builds its own trio, because `setOpacity()`
+  must affect one instance without bleeding into every other instance
+  sharing the scene (exactly what happens once `IndependentShadowEffect`'s
+  own `Avatar` needs a different opacity than the live one).
 - **Shadow**: every limb mesh sets `castShadow`/`receiveShadow`, so the
   floor/light/shadow-map already set up in `rendering/SceneManager.ts`
   render a real soft shadow under the character — no new lighting was
@@ -188,11 +197,60 @@ chained sequence.
   pose — `setVisible()` is a separate, composable override (avatar hidden
   = `visibleOverride && lastPresent`), independent of tracking state.
 
-## Extending with a new effect (future work)
+## Effects (`effects/`)
 
-The `effects/` module is intended to hold an `Effect` interface
-(`enable()/disable()/update(deltaTime, trackingState)/reset()`), each
-implementation driving one or more `Avatar` instances from the same
-`TrackingFrame` (directly, or via `TrackingHistory` for Delay/Reverse).
-`DebugSkeleton` remains a separate, dev-only diagnostic — it is not, and
-was never meant to become, the final avatar.
+`effects/Effect.ts` defines the contract every effect implements:
+`enable()/disable()/update(deltaTimeSeconds, trackingFrame)/reset()`. An
+effect owns whatever it renders — typically its own `Avatar` instance(s) —
+and never touches camera/vision internals directly. `App.ts` constructs
+effects alongside the base `Avatar`/`DebugSkeleton`, and calls `update()`
+once per detection frame with the live `TrackingFrame` and the real elapsed
+time since the previous call.
+
+### IndependentShadowEffect (`effects/IndependentShadowEffect.ts`)
+
+The first implemented effect, and the pattern future ones should follow: it
+owns a second `Avatar` (in `'shadow'` display mode) and feeds it a
+synthetic `TrackingFrame` this effect computes itself each frame —
+reusing 100% of `Avatar`'s existing quaternion/geometry machinery rather
+than rendering anything bespoke. Per update:
+
+1. Push the live frame into a private `TrackingHistory` and look up the
+   pose from `delayMilliseconds` ago as the spring's *target* — the visual
+   "shadow follows with a delay."
+2. For every joint, pull the target's Y toward the floor by
+   `verticalFlatten` (0 = untouched, 1 = pinned to floor Y) — done on the
+   target itself, not via a non-uniform mesh scale, so it flows through
+   `Avatar`'s existing per-limb orientation math unchanged.
+3. Integrate a small deterministic damped-spring per joint
+   (`followStrength` = stiffness, `recoverySpeed` = damping) toward that
+   flattened, delayed target — **never `Math.random()`**. An underdamped
+   spring naturally overshoots and settles, which is exactly "the shadow
+   continues a tiny amount before settling" without any special-cased
+   logic for it.
+4. Scale each joint's effective stiffness/damping by a fixed, per-landmark
+   `DRIFT_FACTOR_BY_LANDMARK` table (shoulders/hips ~0.05, wrists/
+   fingertips ~0.75-1.0) before integrating, controlled by one
+   `driftAmount` knob. This is the "raises an arm and the shadow doesn't
+   perfectly copy it" requirement, modeled on the animation principle of
+   follow-through/overlapping action — extremities lag and settle later
+   than the core, deterministically, so the core never detaches far enough
+   to break the illusion.
+5. Apply `horizontalOffset`/`rotationOffset` via `Avatar.setPosition()`/
+   `setRotation()` — exactly what those root-transform methods exist for —
+   and `opacity` via `Avatar.setOpacity()`.
+6. Position two small flattened, semi-transparent spheres (reusing the
+   avatar system's shared sphere geometry) at the ankles, parented under
+   the shadow avatar's own root, for contact darkening — they inherit its
+   visibility and offset for free.
+
+A cheap stand-in for "blurred, without expensive GPU effects": the shadow
+material sets `depthWrite: false` so overlapping semi-transparent limbs
+blend instead of clipping into hard seams — no shader, no render target.
+
+Every numeric parameter is clamped (see `PARAM_RANGES`) so the illusion
+can't be driven into instability or full detachment regardless of how a
+control (like the sensitivity slider) is set.
+
+`DebugSkeleton` remains a separate, dev-only diagnostic, unrelated to any
+effect — it is not, and was never meant to become, the final avatar.

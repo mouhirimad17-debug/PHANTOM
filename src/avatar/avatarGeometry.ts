@@ -64,3 +64,24 @@ export function createSkeletonMaterial(): MeshStandardMaterial {
     emissiveIntensity: 0.9,
   });
 }
+
+/**
+ * Near-black, minimally-emissive, transparent-by-default variant for effects
+ * that render a "shadow"-style duplicate (see effects/IndependentShadowEffect.ts).
+ * `depthWrite: false` is a deliberately cheap stand-in for a soft/blurred
+ * look: without it, overlapping semi-transparent capsules from the same
+ * duplicate would occlude each other and show hard seams; with it, they
+ * blend, which reads as softer-edged at no GPU shader cost.
+ */
+export function createShadowMaterial(): MeshStandardMaterial {
+  return new MeshStandardMaterial({
+    color: 0x020202,
+    roughness: 0.9,
+    metalness: 0,
+    emissive: new Color(ACCENT_COLOR),
+    emissiveIntensity: 0.02, // just enough to feel like part of the same character, not a glow
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  });
+}

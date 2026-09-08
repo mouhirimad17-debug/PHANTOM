@@ -4,12 +4,20 @@ import { PoseLandmark } from '../utils/poseLandmarks';
 import { computeSegmentTransform } from './limbMath';
 import {
   createMannequinMaterial,
+  createShadowMaterial,
   createSkeletonMaterial,
   SEGMENT_GEOMETRY,
   SPHERE_GEOMETRY,
 } from './avatarGeometry';
 
-export type AvatarDisplayMode = 'mannequin' | 'skeleton';
+/**
+ * 'shadow': dark, minimally-emissive, transparent — for effects that render
+ * a duplicate meant to read as "your shadow," not another body (see
+ * effects/IndependentShadowEffect.ts). Uses the same full-body radius as
+ * 'mannequin' (a shadow of a body is still body-shaped) — only the material
+ * differs.
+ */
+export type AvatarDisplayMode = 'mannequin' | 'skeleton' | 'shadow';
 
 /** Floor for bodyScale so a bad/zero reading can't collapse every segment to nothing. */
 const MIN_BODY_SCALE = 0.05;
@@ -71,6 +79,7 @@ export class Avatar {
 
   private readonly mannequinMaterial = createMannequinMaterial();
   private readonly skeletonMaterial = createSkeletonMaterial();
+  private readonly shadowMaterial = createShadowMaterial();
 
   private readonly headMesh: Mesh;
   private readonly jointMarkers: InstancedMesh;
@@ -213,6 +222,9 @@ export class Avatar {
       const length = computeSegmentTransform(start, end, this.positionScratch, this.quaternionScratch);
       limb.mesh.position.copy(this.positionScratch);
       limb.mesh.quaternion.copy(this.quaternionScratch);
+      // 'shadow' mode shares the full-bodied mannequin radius — only the
+      // material differs; flattening/offset is applied by the effect
+      // driving this avatar, not by thinning the limbs.
       const radiusFactor = useSkeleton ? limb.skeletonRadiusFactor : limb.mannequinRadiusFactor;
       const radius = bodyScale * radiusFactor;
       limb.mesh.scale.set(radius, length, radius);
@@ -239,17 +251,18 @@ export class Avatar {
     this.jointMarkers.instanceMatrix.needsUpdate = true;
   }
 
-  /** Switches between the full-bodied mannequin look and a thin, debug-style skeleton look. Swaps material references only — never recreates meshes. */
+  /** Switches between the full-bodied mannequin look, a thin debug-style skeleton look, and a dark "shadow" look. Swaps material references only — never recreates meshes. */
   setDisplayMode(mode: AvatarDisplayMode): void {
     if (this.displayMode === mode) return;
     this.displayMode = mode;
 
-    const material = mode === 'mannequin' ? this.mannequinMaterial : this.skeletonMaterial;
+    const material =
+      mode === 'mannequin' ? this.mannequinMaterial : mode === 'skeleton' ? this.skeletonMaterial : this.shadowMaterial;
     for (const limb of this.limbs) {
       limb.mesh.material = material;
     }
     this.headMesh.material = material;
-    this.headMesh.visible = mode === 'mannequin';
+    this.headMesh.visible = mode !== 'skeleton';
     this.jointMarkers.visible = mode === 'skeleton';
   }
 
@@ -293,6 +306,8 @@ export class Avatar {
     this.mannequinMaterial.opacity = clamped;
     this.skeletonMaterial.transparent = transparent;
     this.skeletonMaterial.opacity = clamped;
+    this.shadowMaterial.transparent = true; // shadow mode is always at least slightly transparent
+    this.shadowMaterial.opacity = clamped;
   }
 
   /** Returns the avatar to its just-constructed state: hidden, identity transform, opaque, ready for a new tracking session. */
@@ -310,6 +325,7 @@ export class Avatar {
   dispose(): void {
     this.mannequinMaterial.dispose();
     this.skeletonMaterial.dispose();
+    this.shadowMaterial.dispose();
     this.root.removeFromParent();
   }
 }

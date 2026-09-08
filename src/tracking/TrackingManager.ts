@@ -3,7 +3,7 @@ import { POSE_LANDMARK_COUNT, type MirrorDiagnostics, type TrackingFrame, type T
 import type { RawPoseFrame } from '../types/vision';
 import { CoordinateMapper, MAPPER_SCRATCH } from './CoordinateMapper';
 import { LandmarkSmoother } from './LandmarkSmoother';
-import { createTrackingFrame } from './trackingFrame';
+import { computeDerivedFields, createTrackingFrame } from './trackingFrame';
 import { PoseLandmark } from '../utils/poseLandmarks';
 
 /** How long to keep holding the last known pose (state RECOVERING) before declaring it LOST. */
@@ -98,7 +98,7 @@ export class TrackingManager {
     this.frame.state = 'TRACKING';
     this.frame.confidence = visibleCount > 0 ? totalVisibility / visibleCount : 0;
     this.frame.timestampMs = raw.timestampMs;
-    this.updateDerivedFields();
+    computeDerivedFields(this.frame);
 
     const diagnosticLandmark = raw.landmarks[DIAGNOSTIC_LANDMARK_INDEX];
     this.diagnostics = diagnosticLandmark
@@ -129,18 +129,6 @@ export class TrackingManager {
       // derived fields untouched) so a brief dropout doesn't flicker.
     }
     this.frame.timestampMs = nowMs;
-  }
-
-  private updateDerivedFields(): void {
-    const f = this.frame;
-    f.shoulderCenter.addVectors(f.leftShoulder.position, f.rightShoulder.position).multiplyScalar(0.5);
-    f.hipCenter.addVectors(f.leftHip.position, f.rightHip.position).multiplyScalar(0.5);
-    f.bodyCenter.addVectors(f.shoulderCenter, f.hipCenter).multiplyScalar(0.5);
-
-    const dx = f.rightShoulder.position.x - f.leftShoulder.position.x;
-    const dz = f.rightShoulder.position.z - f.leftShoulder.position.z;
-    f.torsoRotation = Math.atan2(dz, dx);
-    f.bodyScale = f.leftShoulder.position.distanceTo(f.rightShoulder.position);
   }
 
   /** Current frame, read-only from the caller's perspective; mutated in place on each `update()`. */

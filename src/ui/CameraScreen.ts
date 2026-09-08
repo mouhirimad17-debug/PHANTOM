@@ -5,6 +5,9 @@ export interface CameraScreenCallbacks {
   onBack: () => void;
   onRetry: () => void;
   onDebugToggle: (visible: boolean) => void;
+  onIndependentShadowToggle: (active: boolean) => void;
+  /** Fires as the advanced-panel sensitivity slider is dragged; maps to the effect's followStrength. */
+  onIndependentShadowSensitivity: (value: number) => void;
 }
 
 export interface DebugStats {
@@ -16,7 +19,7 @@ export interface DebugStats {
   /** Landmarks currently above the visibility threshold, out of landmarkTotal. */
   landmarkCount: number;
   landmarkTotal: number;
-  /** Static placeholder until the Effect system exists — see TODO.md. */
+  /** Name of the currently-enabled effect, or a "none" placeholder — see App.ts. */
   currentEffect: string;
   /** Last pose-inference call duration, or null before the first one completes. */
   inferenceTimeMs: number | null;
@@ -44,13 +47,17 @@ export class CameraScreen {
   private readonly renderXEl = requireElement<HTMLElement>('render-x-value');
   private readonly mirroredEl = requireElement<HTMLElement>('mirrored-value');
 
+  private readonly independentToggleBtn = requireElement<HTMLButtonElement>('independent-toggle-btn');
+
   private debugVisible = false;
+  private independentActive = false;
 
   constructor(callbacks: CameraScreenCallbacks) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
     const debugToggleBtn = requireElement<HTMLButtonElement>('debug-toggle-btn');
     const retryBtn = requireElement<HTMLButtonElement>('camera-error-retry-btn');
     const errorBackBtn = requireElement<HTMLButtonElement>('camera-error-back-btn');
+    const sensitivitySlider = requireElement<HTMLInputElement>('shadow-sensitivity-slider');
 
     backBtn.addEventListener('click', () => callbacks.onBack());
     errorBackBtn.addEventListener('click', () => callbacks.onBack());
@@ -59,6 +66,15 @@ export class CameraScreen {
       this.debugVisible = !this.debugVisible;
       this.debugPanel.classList.toggle('hidden', !this.debugVisible);
       callbacks.onDebugToggle(this.debugVisible);
+    });
+    this.independentToggleBtn.addEventListener('click', () => {
+      this.independentActive = !this.independentActive;
+      this.independentToggleBtn.classList.toggle('active', this.independentActive);
+      this.independentToggleBtn.setAttribute('aria-pressed', String(this.independentActive));
+      callbacks.onIndependentShadowToggle(this.independentActive);
+    });
+    sensitivitySlider.addEventListener('input', () => {
+      callbacks.onIndependentShadowSensitivity(Number(sensitivitySlider.value));
     });
   }
 
@@ -74,6 +90,12 @@ export class CameraScreen {
     this.root.classList.add('hidden');
     this.hideLoading();
     this.hideError();
+    // Keep the toggle's visual state in sync with App.exitCamera() resetting
+    // the underlying effect — otherwise re-entering the camera would show
+    // the button as "active" while the effect actually starts disabled.
+    this.independentActive = false;
+    this.independentToggleBtn.classList.remove('active');
+    this.independentToggleBtn.setAttribute('aria-pressed', 'false');
   }
 
   showLoading(): void {

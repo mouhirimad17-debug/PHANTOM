@@ -72,3 +72,22 @@ export function copyTrackingFrame(dest: TrackingFrame, src: Readonly<TrackingFra
   dest.torsoRotation = src.torsoRotation;
   dest.bodyScale = src.bodyScale;
 }
+
+/**
+ * Recomputes `bodyCenter`/`shoulderCenter`/`hipCenter`/`torsoRotation`/
+ * `bodyScale` from a frame's current (already-positioned) named joints, in
+ * place. The single source of truth for that math — `TrackingManager` calls
+ * this for the live frame, and `IndependentShadowEffect` calls it for its
+ * synthetic shadow frame, so the two can never drift apart by having
+ * separately hand-copied formulas.
+ */
+export function computeDerivedFields(frame: TrackingFrame): void {
+  frame.shoulderCenter.addVectors(frame.leftShoulder.position, frame.rightShoulder.position).multiplyScalar(0.5);
+  frame.hipCenter.addVectors(frame.leftHip.position, frame.rightHip.position).multiplyScalar(0.5);
+  frame.bodyCenter.addVectors(frame.shoulderCenter, frame.hipCenter).multiplyScalar(0.5);
+
+  const dx = frame.rightShoulder.position.x - frame.leftShoulder.position.x;
+  const dz = frame.rightShoulder.position.z - frame.leftShoulder.position.z;
+  frame.torsoRotation = Math.atan2(dz, dx);
+  frame.bodyScale = frame.leftShoulder.position.distanceTo(frame.rightShoulder.position);
+}

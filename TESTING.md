@@ -68,6 +68,23 @@ yet.
   `reset()` returns to identity/hidden/opaque, every limb shares the one
   `SEGMENT_GEOMETRY` instance (no per-segment duplication), and limbs
   `castShadow`.
+- `src/effects/IndependentShadowEffect.test.ts` — the signature effect's
+  full behavior, numerically: it lags further behind a moving target with a
+  larger `delayMilliseconds`; with an underdamped `recoverySpeed` it visibly
+  overshoots a stopped target before settling back onto it (not just
+  reaching it monotonically); a core joint (hip) converges further than an
+  extremity (wrist) given the identical step change with `driftAmount > 0`
+  (the deterministic "doesn't perfectly copy" mechanism); running the exact
+  same input sequence through two fresh instances produces **bit-identical**
+  output (proof there is no `Math.random()` anywhere in the path);
+  `verticalFlatten` pulls a joint's Y to the floor in proportion to its
+  value (0 = untouched, 1 = pinned exactly to floor Y); `horizontalOffset`/
+  `rotationOffset` land on the shadow avatar's root transform; and
+  `configure()` clamps out-of-range values instead of accepting them
+  verbatim. This suite caught a real bug during development — the
+  `verticalFlatten` parameter's clamp range topped out at 0.95 while its own
+  doc comment promised "1 = pinned flat to the floor"; the test asserting
+  the documented behavior failed until the range was fixed to `[0, 1]`.
 
 These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
 transforms) — that must still be checked in a real/scripted browser, since
@@ -133,6 +150,36 @@ substitute for testing against a real body** — it proves the geometry,
 hierarchy, and state transitions render correctly for the specific poses
 tested, not that a real, continuously-noisy MediaPipe feed drives it
 smoothly. See the checklist below for that.
+
+## What was verified for Independent Shadow (this phase)
+
+Same approach and same sandbox caveat as the Avatar section above:
+`SceneManager`, `TrackingManager`, `Avatar`, and `IndependentShadowEffect` —
+the real, unmodified modules — driven directly with a synthetic pose
+sequence, rendering to a real canvas:
+
+1. Walking sideways for ~0.65s renders the live avatar and a visibly
+   distinct second duplicate: dark/semi-transparent, flattened toward the
+   floor, offset to the side, lagging behind the live position.
+2. Stopping and holding position lets the shadow catch up.
+3. Raising both arms from a settled stop shows the shadow's arms visibly
+   **not** matching the live avatar's fully-raised angle in the first few
+   frames after the pose change — the "doesn't perfectly copy" requirement,
+   visible on screen, not just asserted in a unit test.
+4. Soft ground-shadow blobs are visible beneath the character throughout.
+
+Zero console/page errors. The rendered duplicate reads as light gray rather
+than near-black in these captures — that's this test harness's plain white
+page background showing through a semi-transparent dark material (standard
+alpha blending against a light backdrop), not the actual material color;
+over the real live camera feed (rarely pure white) it reads darker. The
+duplicate also lands partially outside this particular 900x700 test
+viewport at this test's specific `horizontalOffset` and pose framing — a
+framing artifact of the synthetic test, not a rendering bug (the offset/
+rotation/flatten math is separately verified exactly, numerically, in
+`IndependentShadowEffect.test.ts`). **Neither of these substitutes for
+looking at it against a real body on a real screen** — see the checklist
+below.
 
 ## Manual verification checklist (run this in a real browser with a real camera)
 
@@ -265,6 +312,72 @@ verified by `Avatar.test.ts` and the scripted visual check above, but if you
 want to eyeball them yourself, drive them from the browser console via
 `import('/src/avatar/Avatar.ts')` against a live `Avatar` instance, or wait
 for the future Effect system to actually use them.
+
+## Manual verification: Independent Shadow effect (this phase)
+
+Open the camera, tap DEBUG to reveal the advanced panel (the sensitivity
+slider lives there — see below), then tap **INDEPENDENT** to enable the
+effect. Recall the concept: this is a visual illusion, not a physics
+simulation — you're checking that it reads as *intentional*, not broken.
+
+**Basic toggle**
+
+- [ ] Tapping INDEPENDENT shows a dark, flattened, offset duplicate of
+      your body near your feet/to one side; the button visibly indicates
+      it's active (accent-colored).
+- [ ] Tapping it again hides the duplicate immediately; the live avatar is
+      completely unaffected either way.
+- [ ] The sensitivity slider (inside the DEBUG panel) visibly changes how
+      snappy vs. laggy the shadow feels while you move — low end feels
+      heavier/slower to catch up, high end feels tighter/more immediate.
+
+**Signature behavior — the actual point of this effect**
+
+- [ ] **Slow movement.** Walk/shift slowly. The shadow should trail behind
+      smoothly, staying recognizably body-shaped the whole time — no
+      jitter, no snapping.
+- [ ] **Fast movement.** Move quickly side to side. The shadow should lag
+      more noticeably (this is expected — see delayMilliseconds/
+      followStrength) but must still track a plausible, non-random path.
+      It must **not** teleport, flicker, or leave a visible limb behind.
+- [ ] **Stopping.** Move, then stop abruptly. The shadow should continue
+      moving for a brief moment before settling into place — not stop
+      dead the instant you do, and not endlessly wobble either.
+- [ ] **Arm movement.** Raise one arm quickly. The shadow's corresponding
+      arm should noticeably lag and not trace the exact same path/angle in
+      real time — it should look like it's "catching up" rather than
+      mirroring you, while the torso/hip area of the shadow stays close to
+      its expected position throughout (the illusion never fully
+      detaches).
+- [ ] **Turning.** Turn your body left/right. The shadow should turn too,
+      with its own slight lag/settle, not stay facing a fixed direction.
+- [ ] **Jumping motion.** A small hop should be handled gracefully — the
+      shadow reacts with extra lag/overshoot (it's the most dramatic,
+      fastest motion you can make) but must recover and settle within a
+      second or two, not spiral, invert, or get stuck off-screen. (Please
+      only attempt small, safe hops in place with clear surroundings —
+      this checklist is about verifying the visual effect, not about
+      performing any physically risky movement.)
+- [ ] **Camera motion** (if on a device where you can move the camera
+      itself, e.g. a laptop you tilt, or by changing your distance to a
+      fixed camera): moving closer/farther or changing the framing should
+      not cause the shadow to jump discontinuously or detach further than
+      usual — it should scale/reposition with the (also-updating) live
+      avatar smoothly.
+
+**Guardrails (things that must never happen)**
+
+- [ ] The shadow never looks like a random/glitchy flicker — no
+      teleporting, no strobing, no inverted limbs.
+- [ ] The shadow never drifts so far from the live avatar that it stops
+      reading as "your shadow" (e.g. wandering off to the side of the
+      frame independent of your position). The core (torso/hip area)
+      should always stay recognizably attached to the live position.
+- [ ] Contact darkening is visible near the shadow's feet against the
+      floor, not floating disconnected from it.
+- [ ] Tracking loss (step out of frame) hides the shadow along with the
+      live avatar; stepping back in brings both back without the shadow
+      snapping across the whole scene.
 
 ## Mobile-specific checks
 

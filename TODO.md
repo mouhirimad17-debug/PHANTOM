@@ -35,26 +35,40 @@
       hierarchy) — see TESTING.md for exactly what's covered vs. still
       manual-only
 - [x] README / ARCHITECTURE / TODO / TESTING docs
+- [x] **Effect interface** (`enable/disable/update/reset`) in `effects/Effect.ts`.
+- [x] **Detach/independence behavior**, first realized as **IndependentShadowEffect**
+      — a dark, flattened, offset duplicate that trails the live avatar with
+      a deterministic delay + damped-spring settle (no `Math.random()`
+      anywhere), with per-joint drift so extremities lag the core
+      convincingly. Owns its own `Avatar` (new `'shadow'` display mode) and
+      its own `TrackingHistory`. UI: an INDEPENDENT toggle button, and a
+      sensitivity slider tucked inside the existing DEBUG panel. See
+      ARCHITECTURE.md and TESTING.md for the full design and manual test
+      checklist.
 
 ## Not yet implemented
 
-- [ ] **Detach/independence behavior** — letting the virtual representation
-      become independent from the user's live movement (core MVP
-      requirement). The Avatar's `setPosition`/`setRotation`/`setScale` give
-      an effect a way to offset a copy from the live-tracked pose, but no
-      effect exists yet to actually drive that independence.
-- [ ] **Effect interface** (`enable/disable/update/reset`) in `effects/`.
-- [ ] **ShadowEffect** — mostly already the default look (the base Avatar
-      always casts a soft shadow — see ARCHITECTURE.md), just needs
-      wrapping in the formal Effect interface once it exists.
+- [ ] **ShadowEffect** as its own named mode — arguably already covered:
+      the base Avatar always casts a soft shadow (see ARCHITECTURE.md), and
+      IndependentShadowEffect is a distinct, more dramatic take on the same
+      idea. Revisit whether a separate, simpler "just a shadow" mode is
+      still wanted once more effects exist.
 - [ ] **CloneEffect** — 2+ synchronized copies of the avatar. `Avatar`
       already supports multiple independent instances (per-instance
-      materials, notably `setOpacity`), so this is mostly "construct N
-      Avatars, feed them offset copies of the same TrackingFrame."
+      materials, notably `setOpacity`) — `IndependentShadowEffect` is a
+      working example of exactly this pattern (one extra `Avatar`, fed a
+      derived `TrackingFrame`), so this is mostly "do that again with N
+      copies and no delay/flatten."
 - [ ] **GhostEffect** — reduced opacity + visual separation from the live avatar.
 - [ ] **ReverseEffect** — avatar driven by mirrored/altered movement.
-- [ ] **DelayEffect** — avatar driven by a short historical pose buffer.
-- [ ] **Effect selector UI** on the camera screen.
+- [ ] **DelayEffect** — avatar driven by a short historical pose buffer (the
+      `TrackingHistory` + delayed-target pattern already exists in
+      `IndependentShadowEffect`; this would be that pattern without the
+      spring/drift/flatten on top).
+- [ ] **Effect selector UI** on the camera screen (currently only
+      IndependentShadowEffect exists, with its own dedicated toggle button
+      rather than a general selector — revisit once there's more than one
+      effect to choose between).
 - [ ] **Recording module** — composed canvas capture -> downloadable video
       file (`recording/`), record/stop UI, never uploaded anywhere.
 - [ ] **Reset button** UI (once there's per-session state worth resetting —

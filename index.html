@@ -33,7 +33,10 @@
 
         <div id="camera-topbar">
           <button id="back-btn" class="icon-btn" type="button" aria-label="Back to landing screen">&#8592;</button>
-          <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
+          <div id="camera-topbar-right">
+            <button id="independent-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Independent Shadow effect" aria-pressed="false">INDEPENDENT</button>
+            <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
+          </div>
         </div>
 
         <div id="debug-panel" class="panel hidden">
@@ -48,6 +51,21 @@
           <div class="debug-row"><span>Raw X</span><span id="raw-x-value">-</span></div>
           <div class="debug-row"><span>Render X</span><span id="render-x-value">-</span></div>
           <div class="debug-row"><span>Mirrored</span><span id="mirrored-value">-</span></div>
+          <!-- Advanced: Independent Shadow sensitivity. Intentionally tucked inside
+               this already-hidden-by-default panel rather than surfaced in the
+               main UI. -->
+          <div class="debug-row debug-row-slider">
+            <label for="shadow-sensitivity-slider">Shadow Sensitivity</label>
+            <input
+              id="shadow-sensitivity-slider"
+              type="range"
+              min="0.5"
+              max="20"
+              step="0.5"
+              value="6"
+              aria-label="Independent Shadow sensitivity"
+            />
+          </div>
         </div>
 
         <div id="camera-loading" class="overlay hidden">
