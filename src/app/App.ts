@@ -2,7 +2,9 @@ import { CameraController } from '../camera/CameraController';
 import { CameraError, type CameraFacing } from '../types/camera';
 import { PoseVision } from '../vision/PoseVision';
 import { VisionError, type RawPoseFrame } from '../types/vision';
+import { VISIBILITY_THRESHOLD } from '../types/tracking';
 import { TrackingManager } from '../tracking/TrackingManager';
+import { TrackingHistory } from '../tracking/TrackingHistory';
 import { SceneManager } from '../rendering/SceneManager';
 import { DebugSkeleton } from '../rendering/DebugSkeleton';
 import { LandingScreen } from '../ui/LandingScreen';
@@ -10,6 +12,11 @@ import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
 import { clamp } from '../utils/math';
 import { isWebGLAvailable } from '../utils/webgl';
+
+// No visual effect exists yet (see TODO.md) — this is a placeholder label
+// for the debug overlay's "current effect" row, to be replaced once the
+// Effect interface and its implementations land.
+const CURRENT_EFFECT_LABEL = 'None (debug skeleton only)';
 
 // Pose inference is throttled independently of the render loop (which stays
 // at display refresh rate) so a slow model never blocks rendering/UI input.
@@ -30,6 +37,7 @@ export class App {
   private readonly poseVision = new PoseVision();
   private readonly fpsCounter = new FpsCounter();
   private readonly webglAvailable = isWebGLAvailable();
+  private readonly trackingHistory = new TrackingHistory();
 
   private sceneManager: SceneManager | null = null;
   private trackingManager: TrackingManager | null = null;
@@ -39,6 +47,7 @@ export class App {
   private lastDetectMs = -Infinity;
   private detectIntervalMs = MIN_DETECT_INTERVAL_MS;
   private avgDetectDurationMs = 0;
+  private lastInferenceDurationMs: number | null = null;
   private visionDetectionFailed = false;
 
   constructor() {
@@ -118,8 +127,10 @@ export class App {
     this.sceneManager?.stop();
     this.camera.stop();
     this.trackingManager?.reset();
+    this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
+    this.lastInferenceDurationMs = null;
     this.cameraScreen.hide();
     this.landingScreen.show();
   }
@@ -137,11 +148,19 @@ export class App {
 
     const frame = trackingManager.getFrame();
     const diagnostics = trackingManager.getMirrorDiagnostics();
+    const landmarkCount = frame.present
+      ? frame.landmarks.filter((joint) => joint.visibility > VISIBILITY_THRESHOLD).length
+      : 0;
+
     this.cameraScreen.updateDebugStats({
       fps: this.fpsCounter.getFps(),
       visionStatus: this.poseVision.getStatus(),
-      poseStatus: this.visionDetectionFailed ? 'error' : frame.present ? 'tracking' : frame.lost ? 'lost' : 'no body',
+      trackingState: this.visionDetectionFailed ? 'ERROR' : frame.state,
       confidence: frame.present ? frame.confidence : null,
+      landmarkCount,
+      landmarkTotal: frame.landmarks.length,
+      currentEffect: CURRENT_EFFECT_LABEL,
+      inferenceTimeMs: this.lastInferenceDurationMs,
       mirrorDiagnostics: diagnostics
         ? { rawX: diagnostics.rawX, renderX: diagnostics.renderX, cameraMirrored: diagnostics.cameraMirrored }
         : null,
@@ -160,6 +179,7 @@ export class App {
     }
 
     const durationMs = performance.now() - nowMs;
+    this.lastInferenceDurationMs = durationMs;
     this.avgDetectDurationMs =
       this.avgDetectDurationMs === 0
         ? durationMs
@@ -172,6 +192,7 @@ export class App {
 
     const frame = trackingManager.update(raw, nowMs);
     debugSkeleton.update(frame);
+    this.trackingHistory.push(frame);
   }
 
   private handleFatalError(err: unknown): void {

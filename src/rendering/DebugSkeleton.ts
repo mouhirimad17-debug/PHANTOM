@@ -55,7 +55,7 @@ export class DebugSkeleton {
     if (!frame.present) return;
 
     for (let i = 0; i < POSE_LANDMARK_COUNT; i++) {
-      const joint = frame.joints[i];
+      const joint = frame.landmarks[i];
       const scale = joint.visibility > JOINT_VISIBILITY_THRESHOLD ? 1 : 0;
       this.dummy.position.copy(joint.position);
       this.dummy.scale.setScalar(scale);
@@ -66,8 +66,8 @@ export class DebugSkeleton {
 
     for (let i = 0; i < POSE_CONNECTIONS.length; i++) {
       const [a, b] = POSE_CONNECTIONS[i]!;
-      const jointA = frame.joints[a]!.position;
-      const jointB = frame.joints[b]!.position;
+      const jointA = frame.landmarks[a]!.position;
+      const jointB = frame.landmarks[b]!.position;
       const base = i * 6;
       this.bonePositions[base] = jointA.x;
       this.bonePositions[base + 1] = jointA.y;

@@ -1,4 +1,5 @@
 import { requireElement } from '../utils/dom';
+import type { TrackingState } from '../types/tracking';
 
 export interface CameraScreenCallbacks {
   onBack: () => void;
@@ -9,8 +10,16 @@ export interface CameraScreenCallbacks {
 export interface DebugStats {
   fps: number;
   visionStatus: string;
-  poseStatus: string;
+  /** TrackingManager's formal state, or 'ERROR' when detection itself failed (not a tracking-loss case). */
+  trackingState: TrackingState | 'ERROR';
   confidence: number | null;
+  /** Landmarks currently above the visibility threshold, out of landmarkTotal. */
+  landmarkCount: number;
+  landmarkTotal: number;
+  /** Static placeholder until the Effect system exists — see TODO.md. */
+  currentEffect: string;
+  /** Last pose-inference call duration, or null before the first one completes. */
+  inferenceTimeMs: number | null;
   /** Temporary mirroring diagnostic for one landmark; null when no body is tracked. */
   mirrorDiagnostics: { rawX: number; renderX: number; cameraMirrored: boolean } | null;
 }
@@ -26,8 +35,11 @@ export class CameraScreen {
   private readonly debugPanel = requireElement<HTMLElement>('debug-panel');
   private readonly fpsValueEl = requireElement<HTMLElement>('fps-value');
   private readonly visionStatusEl = requireElement<HTMLElement>('vision-status-value');
-  private readonly poseStatusEl = requireElement<HTMLElement>('pose-status-value');
+  private readonly trackingStateEl = requireElement<HTMLElement>('tracking-state-value');
   private readonly confidenceEl = requireElement<HTMLElement>('confidence-value');
+  private readonly landmarkCountEl = requireElement<HTMLElement>('landmark-count-value');
+  private readonly currentEffectEl = requireElement<HTMLElement>('current-effect-value');
+  private readonly inferenceTimeEl = requireElement<HTMLElement>('inference-time-value');
   private readonly rawXEl = requireElement<HTMLElement>('raw-x-value');
   private readonly renderXEl = requireElement<HTMLElement>('render-x-value');
   private readonly mirroredEl = requireElement<HTMLElement>('mirrored-value');
@@ -98,8 +110,11 @@ export class CameraScreen {
     if (!this.debugVisible) return;
     this.fpsValueEl.textContent = stats.fps.toFixed(0);
     this.visionStatusEl.textContent = stats.visionStatus;
-    this.poseStatusEl.textContent = stats.poseStatus;
+    this.trackingStateEl.textContent = stats.trackingState;
     this.confidenceEl.textContent = stats.confidence === null ? '-' : `${Math.round(stats.confidence * 100)}%`;
+    this.landmarkCountEl.textContent = `${stats.landmarkCount}/${stats.landmarkTotal}`;
+    this.currentEffectEl.textContent = stats.currentEffect;
+    this.inferenceTimeEl.textContent = stats.inferenceTimeMs === null ? '-' : `${stats.inferenceTimeMs.toFixed(1)} ms`;
 
     const diag = stats.mirrorDiagnostics;
     this.rawXEl.textContent = diag ? diag.rawX.toFixed(3) : '-';

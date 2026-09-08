@@ -30,10 +30,33 @@ yet.
   center when mirrored, that the vertical axis is never affected, and that
   `computeRenderX()` (used by the debug diagnostic) agrees with the value
   `mapJoint()` actually renders with.
+- `src/tracking/OneEuroFilter.test.ts` — the adaptive smoothing filter in
+  isolation: instant first-sample seeding, convergence on a held constant,
+  jitter suppression on a noisy-but-stable signal, catching up after a step
+  change (not permanently lagging), `reset()` reseeding instantly instead of
+  lerping from stale state, and `configure()` actually changing behavior.
+- `src/tracking/TrackingHistory.test.ts` — `push`/`getLatest`/`getAtOffset`/
+  `clear`, capacity wraparound, the configured max-duration window, and —
+  critically — that `push()` stores an **independent snapshot**: mutating
+  the live frame after pushing it must not change what history returns
+  (this is the exact bug class a naive "store the reference" implementation
+  would hit, since `TrackingManager` reuses one mutable frame object).
+- `src/tracking/TrackingManager.test.ts` — the state machine
+  (`INITIALIZING -> TRACKING -> RECOVERING -> LOST` and back), and
+  specifically that recovering from `LOST` snaps instantly to the new
+  position (smoother reset) while a short `RECOVERING` gap does **not**
+  snap (continuity preserved) — the two "don't lag" vs. "don't jump"
+  requirements exercised as a real regression test, not just asserted in
+  prose. Also covers the derived fields (`bodyCenter`, `shoulderCenter`,
+  `hipCenter`, `bodyScale`, `torsoRotation`) for internal consistency with
+  the joint positions that actually produced them, and the named joint
+  accessors' aliasing (`frame.leftShoulder === frame.landmarks[11]`).
 
 These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
 transforms) — that must still be checked in a real/scripted browser, since
-it's DOM/CSS state, not application logic.
+it's DOM/CSS state, not application logic. They also can't cover *how good*
+the smoothing feels on a real, noisy camera signal — that's inherently a
+manual/subjective check, see below.
 
 ## What was verified for the foundation stage
 
@@ -89,8 +112,13 @@ README's HTTPS note):
 - [ ] Move to the edge of frame / step out of frame — the skeleton should
       hold briefly (grace period) then disappear; stepping back in should
       resume tracking without a stale/frozen pose.
-- [ ] Toggle DEBUG — FPS should read a sane number (not 0, not NaN); Pose
-      status should read `tracking` while your body is visible.
+- [ ] Toggle DEBUG — FPS should read a sane number (not 0, not NaN); State
+      should read `TRACKING` while your body is visible, `RECOVERING`
+      briefly if you duck out of frame for under ~600ms, and `LOST` if you
+      stay out longer. Landmarks should read close to `33/33` when your
+      whole body is in frame, lower when only part of you is visible.
+      Inference should show a number of milliseconds, not `-`, once a body
+      has been detected at least once.
 - [ ] BACK returns to the landing screen; the camera's hardware indicator
       light (if your device has one) turns off, confirming the stream was
       actually stopped.
@@ -102,6 +130,44 @@ README's HTTPS note):
 - [ ] Throttle CPU (e.g. Chrome DevTools Performance > CPU throttling 6x) —
       FPS should stay reasonable and the app should not freeze; pose
       inference should visibly slow down rather than blocking the UI.
+
+## Manual verification: tracking quality (this phase)
+
+The unit tests prove the state machine and math are wired correctly, but
+whether the smoothing actually *feels* right — responsive without jitter —
+can only be judged against a real, noisy camera signal. Run through each of
+these with DEBUG on, watching the skeleton against your visible body and the
+State/Landmarks/Confidence rows:
+
+- [ ] **Standing still.** The skeleton should hold steady — no visible
+      micro-jitter/vibration in the joints or bones. State: `TRACKING`.
+- [ ] **Moving left/right.** The skeleton should track your position with
+      the video, without a noticeable delay ("swimming" behind you) and
+      without overshooting past where you stopped.
+- [ ] **Raising arms.** Wrist/elbow joints should follow promptly — this is
+      the fastest-moving part of the body and the best test of "does the
+      filter lag."
+- [ ] **Turning your body (rotating in place).** The skeleton should stay
+      roughly attached to your torso as you turn; landmark count may drop
+      as parts of you turn away from the camera (expected — MediaPipe's
+      confidence legitimately drops on partially-occluded/edge-on limbs).
+- [ ] **Moving closer/farther from the camera.** Confidence and Landmarks
+      should stay high as you get closer; the skeleton should scale
+      plausibly with distance, not jump in size.
+- [ ] **Temporarily leaving the frame** (walk fully out of shot for ~1-2
+      seconds). State should go `TRACKING` -> `RECOVERING` (briefly, holding
+      the last pose without visibly freezing mid-air oddly) -> `LOST`.
+      Landmarks/Confidence should drop to 0 once `LOST`.
+- [ ] **Returning to frame** after being `LOST`. The skeleton should
+      reappear directly at your new position — it must **not** visibly
+      slide/crawl in from wherever it was last seen before you left. This
+      is the smoother-reset behavior covered by
+      `TrackingManager.test.ts`'s "recovers from LOST" test; this step
+      confirms it also *looks* right on a real body, not just in the math.
+- [ ] **Brief occlusion** (quickly duck below frame and back within well
+      under a second). Should stay in `RECOVERING` and resume smoothly with
+      no visible snap/jump — this is the complementary case to the one
+      above (short gap: stay smooth; long gap: snap fast).
 
 ## Mobile-specific checks
 
