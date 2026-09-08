@@ -15,8 +15,8 @@ src/
   rendering/  Three.js scene/camera/renderer/lighting/floor + render loop
   avatar/     procedural humanoid mannequin (capsule-primitive limbs,
               quaternion-oriented from tracked joint positions each frame)
-  effects/    Effect interface + implementations. First: IndependentShadowEffect
-              (Clone/Ghost/Reverse/Delay not yet implemented)
+  effects/    Effect interface + implementations: IndependentShadowEffect,
+              CloneEffect (Ghost/Reverse/Delay not yet implemented)
   recording/  (not yet implemented — canvas capture -> video file)
   ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
   utils/      shared, dependency-free helpers (math, DOM, FPS, pose landmark constants)
@@ -254,3 +254,94 @@ control (like the sensitivity slider) is set.
 
 `DebugSkeleton` remains a separate, dev-only diagnostic, unrelated to any
 effect — it is not, and was never meant to become, the final avatar.
+
+### CloneEffect (`effects/CloneEffect.ts`)
+
+Multiple virtual copies of the user, each a direct read of a stored
+`TrackingFrame` — unlike IndependentShadowEffect, there is deliberately **no**
+spring/smoothing here: a clone is meant to read as a faithful duplicate, just
+offset in space and/or time, not a settling illusion.
+
+- **Pool**: a fixed array of `MAX_CLONES` (5) `Avatar` instances (in
+  `'mannequin'` mode, so clones look like real duplicates, not shadows) is
+  constructed once, in the constructor, and never resized. Enabling the
+  effect, or changing `count`/`mode`, only changes which pool slots are
+  `setVisible(true)` and what frame drives them each `update()` — no
+  `Avatar` is ever constructed or destroyed after startup. This mirrors the
+  IndependentShadowEffect's "own an Avatar, reuse it forever" pattern, just
+  with N instances instead of one.
+- **Arrangement pattern**: `CLONE_SLOT_PATTERNS` is a fixed, deterministic
+  table of small (x, z) offsets per selectable `count` (2/3/5), scaled by a
+  base spacing and the tracked `bodyScale` at render time. Every clone's
+  position is therefore always a small, bounded function of the live body —
+  never a zero offset (which would make clones invisibly stack) and never an
+  arbitrary/unrelated position — directly satisfying "do not create
+  arbitrary floating copies without relation to the user." The pattern is
+  keyed by `count` (not just sliced from the 5-clone table) so 2 clones are
+  always a clean symmetric left/right pair rather than an arbitrary subset
+  of the 5-clone layout.
+- **Modes**: SAME and DELAYED use a small `BASE_SPACING`; SPREAD multiplies
+  that same base pattern by a configurable `spreadDistance`, so all three
+  modes share one arrangement table and differ only in scale and time
+  source:
+  - **SAME** — every visible clone reads the current live `TrackingFrame`
+    directly (`copyTrackingFrame`).
+  - **DELAYED** — clone `i` reads its own private `TrackingHistory` at
+    `i * delayStepMilliseconds` ago (falling back to the live frame if the
+    history doesn't go back far enough yet, e.g. right after enabling), so
+    later clones lag progressively further behind — a visible "motion echo"
+    with no smoothing math needed, since the history buffer already holds
+    exact past frames.
+  - **SPREAD** — every visible clone reads the current live frame, like
+    SAME, but at the wider `spreadDistance`-scaled offset.
+- **Visual variation**: each clone's opacity is the configured base opacity
+  times a fixed per-index fade (`1 - i * OPACITY_FADE_PER_INDEX`, floored at
+  `MIN_OPACITY_FACTOR`), via `Avatar.setOpacity()` — deterministic, not
+  randomized, and enough to make the lineup readable as distinct copies at a
+  glance.
+- **Weak tracking / entering-leaving frame**: when `trackingFrame.present`
+  is `false`, every pooled clone is marked `LOST` and hidden — clones never
+  hold a stale position with no visible live user to relate to. Regaining
+  tracking resumes normally on the next present frame.
+- **Independent transform roots**: each pool slot's `Avatar` has its own
+  `root` `Object3D` (created inside `Avatar`'s own constructor, same as the
+  live avatar), so `setPosition()`/`setOpacity()` on one clone never affects
+  any other — no shared transform state between slots.
+
+#### Performance considerations
+
+- **Pool, never allocate per frame**: the 5-`Avatar` pool is built once at
+  effect-construction time. `update()` only mutates existing meshes'
+  transforms/materials and toggles `visible` — no `Mesh`, `Geometry`, or
+  `Material` is ever created or disposed while the effect is running. This
+  is the single most important cost control here: the expensive part of an
+  `Avatar` (allocating 15+ meshes and their materials) happens at most 5
+  times, ever, for this effect, not once per clone per frame.
+- **Draw-call budget**: each `Avatar` costs roughly the same ~17 draw calls
+  as the live avatar (15 limb-segment capsules + head + joint markers, per
+  `ARCHITECTURE.md`'s Avatar section), plus one shadow-map pass per shadow-
+  casting light if shadows are enabled. With the effect at its maximum of 5
+  clones, that's on the order of 5x the live avatar's own render cost
+  **in addition to** the live avatar and any other enabled effect (e.g.
+  IndependentShadowEffect) — roughly 6 full bodies on screen at once at the
+  `count: 5` cap. All 15 limb segments across all clones still share the
+  same two module-level geometries (`avatarGeometry.ts`), so the added cost
+  is draw calls and per-clone materials, not geometry memory.
+- **Why the count is hard-capped at 5**: `CloneCount` is a `2 | 3 | 5` union
+  (compile-time enforced) and the pool is sized to `MAX_CLONES = 5` — there
+  is no path, UI or otherwise, to request more. 5 extra bodies (plus the
+  live one) is already a meaningful draw-call and shadow-map load on a
+  mid-range mobile GPU; going higher would risk the same frame-rate cliff
+  that motivated `App.ts`'s adaptive pose-inference throttling elsewhere in
+  this codebase, for a mode whose whole point is a fixed, small, "photo
+  booth" style copy count rather than a crowd effect.
+- **Recommendation for weaker devices**: on a device where the base avatar
+  or IndependentShadowEffect already show a low DEBUG-panel FPS, prefer
+  `count: 2` (and `mannequin`-only, no other effect layered on top) over the
+  5-clone SPREAD arrangement — 2 extra bodies is a much smaller draw-call
+  and shadow increment than 5, and no shading/quality options need to change
+  to get there since it's just a UI selection. There is deliberately no
+  automatic device-tier detection here (consistent with the rest of this
+  codebase not guessing device capability up front) — the DEBUG panel's FPS
+  reading is the existing, already-documented way to judge whether an
+  effect combination is too heavy for a given device.

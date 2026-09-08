@@ -45,6 +45,18 @@
       sensitivity slider tucked inside the existing DEBUG panel. See
       ARCHITECTURE.md and TESTING.md for the full design and manual test
       checklist.
+- [x] **CloneEffect** — 2/3/5 selectable virtual copies of the user, each
+      driven directly from a stored `TrackingFrame` (no spring/smoothing —
+      contrast IndependentShadowEffect). Three modes: SAME (all clones on
+      the current frame), DELAYED (each clone reads a different offset into
+      its own `TrackingHistory`), SPREAD (current frame + a scaled spatial
+      offset). A fixed pool of 5 `Avatar` instances is created once and
+      reused for the whole session (never destroyed/recreated); each clone
+      gets a deterministic, bounded position from a fixed arrangement
+      pattern (never an arbitrary floating copy) and a slightly-fading
+      opacity for visual variation. UI: a CLONE toggle, count/mode segmented
+      selectors, and RESET ALL. See ARCHITECTURE.md (design + performance
+      considerations) and TESTING.md for the full test checklist.
 
 ## Not yet implemented
 
@@ -53,12 +65,6 @@
       IndependentShadowEffect is a distinct, more dramatic take on the same
       idea. Revisit whether a separate, simpler "just a shadow" mode is
       still wanted once more effects exist.
-- [ ] **CloneEffect** — 2+ synchronized copies of the avatar. `Avatar`
-      already supports multiple independent instances (per-instance
-      materials, notably `setOpacity`) — `IndependentShadowEffect` is a
-      working example of exactly this pattern (one extra `Avatar`, fed a
-      derived `TrackingFrame`), so this is mostly "do that again with N
-      copies and no delay/flatten."
 - [ ] **GhostEffect** — reduced opacity + visual separation from the live avatar.
 - [ ] **ReverseEffect** — avatar driven by mirrored/altered movement.
 - [ ] **DelayEffect** — avatar driven by a short historical pose buffer (the

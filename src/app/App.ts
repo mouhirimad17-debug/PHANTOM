@@ -9,6 +9,7 @@ import { SceneManager } from '../rendering/SceneManager';
 import { DebugSkeleton } from '../rendering/DebugSkeleton';
 import { Avatar } from '../avatar/Avatar';
 import { IndependentShadowEffect } from '../effects/IndependentShadowEffect';
+import { CloneEffect, type CloneCount, type CloneMode } from '../effects/CloneEffect';
 import { LandingScreen } from '../ui/LandingScreen';
 import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
@@ -44,6 +45,7 @@ export class App {
   private debugSkeleton: DebugSkeleton | null = null;
   private avatar: Avatar | null = null;
   private independentShadowEffect: IndependentShadowEffect | null = null;
+  private cloneEffect: CloneEffect | null = null;
 
   private facing: CameraFacing = 'user';
   private lastDetectMs = -Infinity;
@@ -63,6 +65,13 @@ export class App {
         else this.independentShadowEffect?.disable();
       },
       onIndependentShadowSensitivity: (value) => this.independentShadowEffect?.configure({ followStrength: value }),
+      onCloneToggle: (active) => {
+        if (active) this.cloneEffect?.enable();
+        else this.cloneEffect?.disable();
+      },
+      onCloneCountChange: (count: CloneCount) => this.cloneEffect?.configure({ count }),
+      onCloneModeChange: (mode: CloneMode) => this.cloneEffect?.configure({ mode }),
+      onCloneResetAll: () => this.cloneEffect?.reset(),
     });
     this.landingScreen = new LandingScreen({
       onEnterCamera: () => void this.enterCamera(),
@@ -77,9 +86,10 @@ export class App {
       const debugSkeleton = new DebugSkeleton(sceneManager.scene);
       const avatar = new Avatar(sceneManager.scene);
       const independentShadowEffect = new IndependentShadowEffect(sceneManager.scene, sceneManager.floor.position.y);
+      const cloneEffect = new CloneEffect(sceneManager.scene);
 
       sceneManager.onFrame((delta) =>
-        this.handleFrame(delta, trackingManager, debugSkeleton, avatar, independentShadowEffect),
+        this.handleFrame(delta, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect),
       );
 
       this.sceneManager = sceneManager;
@@ -87,6 +97,7 @@ export class App {
       this.debugSkeleton = debugSkeleton;
       this.avatar = avatar;
       this.independentShadowEffect = independentShadowEffect;
+      this.cloneEffect = cloneEffect;
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
@@ -143,6 +154,7 @@ export class App {
     this.trackingManager?.reset();
     this.avatar?.reset();
     this.independentShadowEffect?.reset();
+    this.cloneEffect?.reset();
     this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
@@ -158,6 +170,7 @@ export class App {
     debugSkeleton: DebugSkeleton,
     avatar: Avatar,
     independentShadowEffect: IndependentShadowEffect,
+    cloneEffect: CloneEffect,
   ): void {
     this.fpsCounter.update(deltaSeconds);
 
@@ -165,7 +178,7 @@ export class App {
       const now = performance.now();
       if (now - this.lastDetectMs >= this.detectIntervalMs) {
         this.lastDetectMs = now;
-        this.runDetection(now, trackingManager, debugSkeleton, avatar, independentShadowEffect);
+        this.runDetection(now, trackingManager, debugSkeleton, avatar, independentShadowEffect, cloneEffect);
       }
     }
 
@@ -175,6 +188,13 @@ export class App {
       ? frame.landmarks.filter((joint) => joint.visibility > VISIBILITY_THRESHOLD).length
       : 0;
 
+    const activeEffectLabels: string[] = [];
+    if (independentShadowEffect.isEnabled()) activeEffectLabels.push(INDEPENDENT_SHADOW_LABEL);
+    if (cloneEffect.isEnabled()) {
+      const { count, mode } = cloneEffect.getParams();
+      activeEffectLabels.push(`Clone (${mode} x${count})`);
+    }
+
     this.cameraScreen.updateDebugStats({
       fps: this.fpsCounter.getFps(),
       visionStatus: this.poseVision.getStatus(),
@@ -182,7 +202,7 @@ export class App {
       confidence: frame.present ? frame.confidence : null,
       landmarkCount,
       landmarkTotal: frame.landmarks.length,
-      currentEffect: independentShadowEffect.isEnabled() ? INDEPENDENT_SHADOW_LABEL : NO_EFFECT_LABEL,
+      currentEffect: activeEffectLabels.length > 0 ? activeEffectLabels.join(' + ') : NO_EFFECT_LABEL,
       inferenceTimeMs: this.lastInferenceDurationMs,
       mirrorDiagnostics: diagnostics
         ? { rawX: diagnostics.rawX, renderX: diagnostics.renderX, cameraMirrored: diagnostics.cameraMirrored }
@@ -196,6 +216,7 @@ export class App {
     debugSkeleton: DebugSkeleton,
     avatar: Avatar,
     independentShadowEffect: IndependentShadowEffect,
+    cloneEffect: CloneEffect,
   ): void {
     const video = this.cameraScreen.videoElement;
     let raw: RawPoseFrame | null;
@@ -229,6 +250,7 @@ export class App {
     const effectDeltaSeconds = this.lastEffectUpdateMs === -Infinity ? 0 : (nowMs - this.lastEffectUpdateMs) / 1000;
     this.lastEffectUpdateMs = nowMs;
     independentShadowEffect.update(effectDeltaSeconds, frame);
+    cloneEffect.update(effectDeltaSeconds, frame);
   }
 
   private handleFatalError(err: unknown): void {

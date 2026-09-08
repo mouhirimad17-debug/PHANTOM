@@ -1,5 +1,6 @@
 import { requireElement } from '../utils/dom';
 import type { TrackingState } from '../types/tracking';
+import type { CloneCount, CloneMode } from '../effects/CloneEffect';
 
 export interface CameraScreenCallbacks {
   onBack: () => void;
@@ -8,6 +9,10 @@ export interface CameraScreenCallbacks {
   onIndependentShadowToggle: (active: boolean) => void;
   /** Fires as the advanced-panel sensitivity slider is dragged; maps to the effect's followStrength. */
   onIndependentShadowSensitivity: (value: number) => void;
+  onCloneToggle: (active: boolean) => void;
+  onCloneCountChange: (count: CloneCount) => void;
+  onCloneModeChange: (mode: CloneMode) => void;
+  onCloneResetAll: () => void;
 }
 
 export interface DebugStats {
@@ -48,9 +53,16 @@ export class CameraScreen {
   private readonly mirroredEl = requireElement<HTMLElement>('mirrored-value');
 
   private readonly independentToggleBtn = requireElement<HTMLButtonElement>('independent-toggle-btn');
+  private readonly cloneToggleBtn = requireElement<HTMLButtonElement>('clone-toggle-btn');
+  private readonly clonePanel = requireElement<HTMLElement>('clone-panel');
+  private readonly cloneCountBtns = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('[data-clone-count]'),
+  );
+  private readonly cloneModeBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-clone-mode]'));
 
   private debugVisible = false;
   private independentActive = false;
+  private cloneActive = false;
 
   constructor(callbacks: CameraScreenCallbacks) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
@@ -58,6 +70,7 @@ export class CameraScreen {
     const retryBtn = requireElement<HTMLButtonElement>('camera-error-retry-btn');
     const errorBackBtn = requireElement<HTMLButtonElement>('camera-error-back-btn');
     const sensitivitySlider = requireElement<HTMLInputElement>('shadow-sensitivity-slider');
+    const cloneResetAllBtn = requireElement<HTMLButtonElement>('clone-reset-all-btn');
 
     backBtn.addEventListener('click', () => callbacks.onBack());
     errorBackBtn.addEventListener('click', () => callbacks.onBack());
@@ -76,6 +89,43 @@ export class CameraScreen {
     sensitivitySlider.addEventListener('input', () => {
       callbacks.onIndependentShadowSensitivity(Number(sensitivitySlider.value));
     });
+
+    this.cloneToggleBtn.addEventListener('click', () => {
+      this.setCloneActive(!this.cloneActive);
+      callbacks.onCloneToggle(this.cloneActive);
+    });
+    for (const btn of this.cloneCountBtns) {
+      btn.addEventListener('click', () => {
+        this.setSegmentedPressed(this.cloneCountBtns, btn);
+        callbacks.onCloneCountChange(Number(btn.dataset['cloneCount']) as CloneCount);
+      });
+    }
+    for (const btn of this.cloneModeBtns) {
+      btn.addEventListener('click', () => {
+        this.setSegmentedPressed(this.cloneModeBtns, btn);
+        callbacks.onCloneModeChange(btn.dataset['cloneMode'] as CloneMode);
+      });
+    }
+    cloneResetAllBtn.addEventListener('click', () => {
+      callbacks.onCloneResetAll();
+      // Reflect CloneEffect.reset()'s restored defaults (disabled, count=3, mode=SPREAD) in the UI.
+      this.setCloneActive(false);
+      this.setSegmentedPressed(this.cloneCountBtns, this.cloneCountBtns.find((b) => b.dataset['cloneCount'] === '3'));
+      this.setSegmentedPressed(this.cloneModeBtns, this.cloneModeBtns.find((b) => b.dataset['cloneMode'] === 'SPREAD'));
+    });
+  }
+
+  private setCloneActive(active: boolean): void {
+    this.cloneActive = active;
+    this.cloneToggleBtn.classList.toggle('active', active);
+    this.cloneToggleBtn.setAttribute('aria-pressed', String(active));
+    this.clonePanel.classList.toggle('hidden', !active);
+  }
+
+  private setSegmentedPressed(group: HTMLButtonElement[], selected: HTMLButtonElement | undefined): void {
+    for (const btn of group) {
+      btn.setAttribute('aria-pressed', String(btn === selected));
+    }
   }
 
   getContainer(): HTMLElement {
@@ -96,6 +146,7 @@ export class CameraScreen {
     this.independentActive = false;
     this.independentToggleBtn.classList.remove('active');
     this.independentToggleBtn.setAttribute('aria-pressed', 'false');
+    this.setCloneActive(false);
   }
 
   showLoading(): void {

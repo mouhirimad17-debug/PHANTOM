@@ -34,9 +34,30 @@
         <div id="camera-topbar">
           <button id="back-btn" class="icon-btn" type="button" aria-label="Back to landing screen">&#8592;</button>
           <div id="camera-topbar-right">
+            <button id="clone-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Clone effect" aria-pressed="false">CLONE</button>
             <button id="independent-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Independent Shadow effect" aria-pressed="false">INDEPENDENT</button>
             <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
           </div>
+        </div>
+
+        <div id="clone-panel" class="panel clone-panel hidden">
+          <div class="clone-panel-group">
+            <span class="clone-panel-label">Clones</span>
+            <div class="segmented-control" role="group" aria-label="Clone count">
+              <button type="button" class="segmented-btn" data-clone-count="2">2</button>
+              <button type="button" class="segmented-btn" data-clone-count="3" aria-pressed="true">3</button>
+              <button type="button" class="segmented-btn" data-clone-count="5">5</button>
+            </div>
+          </div>
+          <div class="clone-panel-group">
+            <span class="clone-panel-label">Mode</span>
+            <div class="segmented-control" role="group" aria-label="Clone mode">
+              <button type="button" class="segmented-btn" data-clone-mode="SAME">SAME</button>
+              <button type="button" class="segmented-btn" data-clone-mode="DELAYED">DELAYED</button>
+              <button type="button" class="segmented-btn" data-clone-mode="SPREAD" aria-pressed="true">SPREAD</button>
+            </div>
+          </div>
+          <button id="clone-reset-all-btn" class="btn btn-secondary clone-reset-btn" type="button">RESET ALL</button>
         </div>
 
         <div id="debug-panel" class="panel hidden">

@@ -85,6 +85,22 @@ yet.
   `verticalFlatten` parameter's clamp range topped out at 0.95 while its own
   doc comment promised "1 = pinned flat to the floor"; the test asserting
   the documented behavior failed until the range was fixed to `[0, 1]`.
+- `src/effects/CloneEffect.test.ts` — the pool is exactly 5 `Avatar`s,
+  created once and never recreated across repeated `configure()`/`update()`
+  calls (checked via object-reference identity, `toBe`); exactly `count`
+  clones are visible and the rest stay hidden; SAME reproduces the current
+  frame exactly on every visible clone; DELAYED clones lag progressively
+  more the higher their pool index; SPREAD's offset scales up with
+  `spreadDistance`, and SAME/DELAYED's baseline offset is smaller than
+  SPREAD's for the same slot; every clone's offset stays within a small,
+  bounded multiple of `bodyScale` (never an arbitrary floating position);
+  opacity strictly decreases across the clone lineup (the "slight visual
+  variation" requirement, checked numerically via each clone's own head
+  material); tracking loss hides every clone and regaining tracking resumes
+  correctly; `reset()` restores defaults and hides everything; and an
+  invalid `count`/`mode`/`opacity`/`delayStepMilliseconds`/`spreadDistance`
+  passed to `configure()` is clamped or ignored rather than accepted
+  verbatim.
 
 These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
 transforms) — that must still be checked in a real/scripted browser, since
@@ -180,6 +196,41 @@ rotation/flatten math is separately verified exactly, numerically, in
 `IndependentShadowEffect.test.ts`). **Neither of these substitutes for
 looking at it against a real body on a real screen** — see the checklist
 below.
+
+## What was verified for Clone (this phase)
+
+Same sandbox network restriction as before (see the foundation-stage caveat
+above), and the same approach as the Avatar/Independent Shadow phases: the
+real, unmodified `SceneManager`, `TrackingManager`, `Avatar`, and
+`CloneEffect` modules were driven directly in a real Chromium/WebGL context
+with a synthetic pose sequence (arms slowly rising, then held), rendering to
+a real canvas and reading it back via `canvas.toDataURL()`:
+
+1. **SPREAD, 5 clones**: the live avatar plus 5 clearly separated clones
+   render in a fanned-out arrangement around it, each with a visible floor
+   shadow and a visibly-fading opacity across the lineup — no two bodies
+   fully overlap. (The initial capture caught the 3- and 5-clone patterns'
+   center slot sitting almost exactly where the live avatar stands, making
+   it read as one overlapping figure rather than a distinct clone; the
+   `CLONE_SLOT_PATTERNS` center-slot offsets were increased and the capture
+   re-run to confirm clear separation — see the CloneEffect section of
+   ARCHITECTURE.md.)
+2. **DELAYED, 3 clones**: after continuing to raise arms, the clones show a
+   visible "motion echo" — their arms lag behind the live avatar's fully-
+   raised pose by a visibly increasing amount, matching `delayStepMilliseconds`
+   scaling with pool index.
+3. **SAME, 2 clones**: both clones stay synchronized with the live avatar's
+   current pose, offset by only the small SAME/DELAYED baseline spacing
+   (visibly tighter than the SPREAD arrangement above).
+4. **Tracking lost**: setting `present: false` hides every pooled clone
+   (`root.visible === false` confirmed for all 5 pool slots, including the
+   3 not currently selected by `count`).
+
+Zero console/page errors across all of the above. As with the Avatar and
+Independent Shadow phases, this proves the pooling, arrangement math, and
+mode behavior render correctly for the poses tested — it is not a
+substitute for judging how the effect feels against a real, continuously
+noisy camera feed. See the checklist below for that.
 
 ## Manual verification checklist (run this in a real browser with a real camera)
 
@@ -378,6 +429,69 @@ simulation — you're checking that it reads as *intentional*, not broken.
 - [ ] Tracking loss (step out of frame) hides the shadow along with the
       live avatar; stepping back in brings both back without the shadow
       snapping across the whole scene.
+
+## Manual verification: Clone effect (this phase)
+
+Open the camera and tap **CLONE** to enable the effect — a count selector
+(2/3/5) and mode selector (SAME/DELAYED/SPREAD) panel appears; a **RESET
+ALL** button returns everything to defaults (disabled, count 3, SPREAD).
+
+**Basic toggle and controls**
+
+- [ ] Tapping CLONE shows the selected count of virtual copies arranged
+      around you; the button visibly indicates it's active.
+- [ ] Tapping it again hides all clones immediately; the live avatar is
+      unaffected.
+- [ ] Switching the count selector (2/3/5) changes how many clones are
+      visible without any visible pop/flicker in the ones that stay shown.
+- [ ] Switching the mode selector (SAME/DELAYED/SPREAD) changes the
+      clones' behavior immediately, without hiding/reshowing them.
+- [ ] **RESET ALL** turns the effect off, and the count/mode selectors
+      visibly return to their defaults (3, SPREAD).
+
+**Different body positions / turning**
+
+- [ ] Stand in different positions in frame (left, right, center, closer,
+      farther) — clones should stay arranged around your current position
+      and scale with your `bodyScale`, not stay pinned to a fixed screen
+      location.
+- [ ] Turn your body left/right — every visible clone should turn with you
+      (they read the same tracked pose, just offset/delayed).
+
+**Mode-specific behavior**
+
+- [ ] **SAME**: all clones mirror your current pose in real time, with only
+      a small, fixed spatial offset between them — no lag.
+- [ ] **DELAYED**: clones visibly echo your movement with increasing delay
+      the further a clone is in the lineup — raise an arm quickly and watch
+      each clone raise its arm slightly later than the previous one.
+- [ ] **SPREAD**: clones fan out further from your position than in SAME/
+      DELAYED, each still following your current pose.
+
+**Entering/leaving frame and weak tracking**
+
+- [ ] Step out of frame — all clones disappear along with the live avatar;
+      none are left behind floating at a stale position.
+- [ ] Step back into frame — clones reappear at your new position/pose
+      without sliding in from anywhere.
+- [ ] In poor tracking conditions (partial occlusion, low light, edge of
+      frame), clones should never appear detached, frozen mid-air, or
+      visibly "stuck" independent of your tracked body — if tracking drops,
+      they should hide rather than show a stale pose.
+
+**Guardrails (things that must never happen)**
+
+- [ ] No clone ever appears at an arbitrary/unrelated position — every
+      clone's offset should visibly scale with your distance from the
+      camera (via `bodyScale`), never stay a fixed pixel offset regardless
+      of your size on screen.
+- [ ] No clone flickers, teleports, or appears without a visible relation
+      (pose-wise) to your live movement.
+- [ ] Enabling the maximum count (5, SPREAD) should not cause a dramatic
+      frame-rate drop on a modern desktop/phone — check the DEBUG panel's
+      FPS reading before and after enabling; see ARCHITECTURE.md's
+      performance-considerations section for what to do if it does drop on
+      a weaker device.
 
 ## Mobile-specific checks
 
