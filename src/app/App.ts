@@ -7,16 +7,18 @@ import { TrackingManager } from '../tracking/TrackingManager';
 import { TrackingHistory } from '../tracking/TrackingHistory';
 import { SceneManager } from '../rendering/SceneManager';
 import { DebugSkeleton } from '../rendering/DebugSkeleton';
+import { Avatar } from '../avatar/Avatar';
 import { LandingScreen } from '../ui/LandingScreen';
 import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
 import { clamp } from '../utils/math';
 import { isWebGLAvailable } from '../utils/webgl';
 
-// No visual effect exists yet (see TODO.md) — this is a placeholder label
-// for the debug overlay's "current effect" row, to be replaced once the
-// Effect interface and its implementations land.
-const CURRENT_EFFECT_LABEL = 'None (debug skeleton only)';
+// No visual Effect (enable/disable/update/reset) exists yet (see TODO.md) —
+// this is a placeholder label for the debug overlay's "current effect" row,
+// to be replaced once the Effect interface and its implementations land.
+// The Avatar itself is the base character, not an "effect".
+const CURRENT_EFFECT_LABEL = 'None (base avatar)';
 
 // Pose inference is throttled independently of the render loop (which stays
 // at display refresh rate) so a slow model never blocks rendering/UI input.
@@ -42,6 +44,7 @@ export class App {
   private sceneManager: SceneManager | null = null;
   private trackingManager: TrackingManager | null = null;
   private debugSkeleton: DebugSkeleton | null = null;
+  private avatar: Avatar | null = null;
 
   private facing: CameraFacing = 'user';
   private lastDetectMs = -Infinity;
@@ -67,12 +70,14 @@ export class App {
       sceneManager.attach(this.cameraScreen.getContainer());
       const trackingManager = new TrackingManager(sceneManager.camera);
       const debugSkeleton = new DebugSkeleton(sceneManager.scene);
+      const avatar = new Avatar(sceneManager.scene);
 
-      sceneManager.onFrame((delta) => this.handleFrame(delta, trackingManager, debugSkeleton));
+      sceneManager.onFrame((delta) => this.handleFrame(delta, trackingManager, debugSkeleton, avatar));
 
       this.sceneManager = sceneManager;
       this.trackingManager = trackingManager;
       this.debugSkeleton = debugSkeleton;
+      this.avatar = avatar;
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
@@ -127,6 +132,7 @@ export class App {
     this.sceneManager?.stop();
     this.camera.stop();
     this.trackingManager?.reset();
+    this.avatar?.reset();
     this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
@@ -135,14 +141,19 @@ export class App {
     this.landingScreen.show();
   }
 
-  private handleFrame(deltaSeconds: number, trackingManager: TrackingManager, debugSkeleton: DebugSkeleton): void {
+  private handleFrame(
+    deltaSeconds: number,
+    trackingManager: TrackingManager,
+    debugSkeleton: DebugSkeleton,
+    avatar: Avatar,
+  ): void {
     this.fpsCounter.update(deltaSeconds);
 
     if (this.camera.isActive() && this.poseVision.isReady() && !this.visionDetectionFailed) {
       const now = performance.now();
       if (now - this.lastDetectMs >= this.detectIntervalMs) {
         this.lastDetectMs = now;
-        this.runDetection(now, trackingManager, debugSkeleton);
+        this.runDetection(now, trackingManager, debugSkeleton, avatar);
       }
     }
 
@@ -167,7 +178,12 @@ export class App {
     });
   }
 
-  private runDetection(nowMs: number, trackingManager: TrackingManager, debugSkeleton: DebugSkeleton): void {
+  private runDetection(
+    nowMs: number,
+    trackingManager: TrackingManager,
+    debugSkeleton: DebugSkeleton,
+    avatar: Avatar,
+  ): void {
     const video = this.cameraScreen.videoElement;
     let raw: RawPoseFrame | null;
     try {
@@ -192,6 +208,7 @@ export class App {
 
     const frame = trackingManager.update(raw, nowMs);
     debugSkeleton.update(frame);
+    avatar.updateFromTracking(frame);
     this.trackingHistory.push(frame);
   }
 

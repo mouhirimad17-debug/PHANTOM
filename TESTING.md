@@ -52,11 +52,29 @@ yet.
   the joint positions that actually produced them, and the named joint
   accessors' aliasing (`frame.leftShoulder === frame.landmarks[11]`).
 
+- `src/avatar/limbMath.test.ts` — `computeSegmentTransform()` in isolation:
+  the output position is the true midpoint, the returned length is the true
+  distance, the orientation quaternion rotates the shared up-axis to
+  *exactly* the start->end direction (checked for several different
+  directions, not just the trivial already-aligned case), and a degenerate
+  (coincident-point) input neither produces `NaN` nor disturbs a
+  previously-set orientation.
+- `src/avatar/Avatar.test.ts` — the assembled avatar: it attaches to the
+  scene hidden, becomes visible and positions a real segment (checked
+  against the actual joint positions, not just "some value") once a body is
+  tracked, **freezes** (does not reset) its pose and hides when tracking is
+  lost, `setVisible(false)` overrides tracking presence, `setDisplayMode()`
+  swaps material/visibility without recreating any mesh or geometry,
+  `reset()` returns to identity/hidden/opaque, every limb shares the one
+  `SEGMENT_GEOMETRY` instance (no per-segment duplication), and limbs
+  `castShadow`.
+
 These do **not** cover the CSS layer (`#camera-video` / `#scene-canvas`
 transforms) — that must still be checked in a real/scripted browser, since
 it's DOM/CSS state, not application logic. They also can't cover *how good*
-the smoothing feels on a real, noisy camera signal — that's inherently a
-manual/subjective check, see below.
+the smoothing feels on a real, noisy camera signal, or whether the mannequin
+actually *looks* like a coherent body — those are inherently
+manual/visual checks, see below.
 
 ## What was verified for the foundation stage
 
@@ -84,6 +102,37 @@ that environment. The failure path was confirmed instead (network blocked ->
 `VisionError` -> error overlay shown, no crash). **This must be manually
 verified in a normal, unrestricted environment before considering the
 foundation stage done** — see the checklist below.
+
+## What was verified for the Avatar (this phase)
+
+Same sandbox network restriction as before (see the caveat above) meant the
+avatar could not be exercised through the real camera + MediaPipe pipeline
+here either. Instead, `SceneManager`, `TrackingManager`, and `Avatar` — the
+real, unmodified app modules — were driven directly in a real Chromium/WebGL
+context (bypassing only `PoseVision`, which needs the blocked CDN) with
+synthetic pose data, and the actual rendered canvas was captured:
+
+1. A standing pose renders as a recognizable, correctly-proportioned
+   humanoid (head/neck/torso/arms/legs), with a visible soft shadow cast
+   onto the floor.
+2. Feeding an "arms raised" pose moves the shoulder/elbow/wrist segments to
+   the new angles correctly — confirming the quaternion orientation math
+   reacts correctly to a real pose change, not just the one pose it was
+   written against.
+3. `setDisplayMode('skeleton')` visibly swaps to thin limbs, a brighter
+   accent color, and visible joint-marker spheres at each joint — distinct
+   from mannequin mode, using the same underlying data.
+4. Setting `frame.present = false` (simulating `LOST`) makes the avatar
+   fully disappear (confirmed both via `root.visible === false` and an
+   empty rendered frame).
+5. Tracking "recovering" back to the standing pose makes the avatar
+   reappear correctly, matching the original standing render.
+
+Zero console/page errors across all of the above. **This is not a
+substitute for testing against a real body** — it proves the geometry,
+hierarchy, and state transitions render correctly for the specific poses
+tested, not that a real, continuously-noisy MediaPipe feed drives it
+smoothly. See the checklist below for that.
 
 ## Manual verification checklist (run this in a real browser with a real camera)
 
@@ -168,6 +217,54 @@ State/Landmarks/Confidence rows:
       under a second). Should stay in `RECOVERING` and resume smoothly with
       no visible snap/jump — this is the complementary case to the one
       above (short gap: stay smooth; long gap: snap fast).
+
+## Manual verification: Avatar (this phase)
+
+The debug skeleton overlay is still there (toggle DEBUG), but the mannequin
+is now the primary visible character — it should render always (not only in
+DEBUG mode) whenever a body is tracked. Check it against your real body:
+
+- [ ] **Shape.** You should see a coherent humanoid: head, neck, torso,
+      two arms, two legs, all connected with no visible gaps or segments
+      flying off to strange positions.
+- [ ] **Arm movement.** Raise one arm, then the other, then both. The
+      corresponding upper-arm/forearm/hand segments should bend at the
+      elbow/wrist convincingly and follow your real arm's angle.
+- [ ] **Leg movement.** Step/lift a knee, shift your stance. Thigh/shin/foot
+      segments should follow, and both legs should stay attached to the
+      hips area, not drift apart.
+- [ ] **Turning your body.** The torso and shoulder line should visibly
+      rotate as you turn (this is `torsoRotation` at work, indirectly, via
+      the shoulder joints' own positions) rather than staying frozen facing
+      the camera.
+- [ ] **Moving relative to the camera** (closer/farther, left/right). The
+      whole mannequin should scale and translate with you as one coherent
+      body — no limb should visibly "swim" independently of the rest, and
+      no limb should snap to an unrelated position.
+- [ ] **Tracking loss.** Step out of frame — the mannequin should disappear
+      entirely (not collapse into a pile at the origin, not leave a
+      stray limb behind).
+- [ ] **Recovery.** Step back into frame — the mannequin should reappear
+      directly in your current pose, not slide in from its last-seen
+      position (same underlying guarantee as the skeleton's recovery
+      behavior, now visible on the actual character).
+- [ ] **Ground shadow.** With reasonable lighting/light-facing in your
+      scene setup, a soft shadow should be visible on the virtual floor
+      beneath the character (may be subtle depending on camera angle/FOV —
+      the floor is below the visible frame in a typical selfie framing, so
+      this is easiest to see if you lean back or the camera is angled
+      downward).
+- [ ] **No red flags in DEBUG.** FPS should not measurably drop compared to
+      before the avatar existed — the whole character is ~17 draw calls
+      with two shared geometries, so it should be effectively free on any
+      device that could already run the debug skeleton.
+
+`setDisplayMode('skeleton')`, `setPosition`/`setRotation`/`setScale`, and
+`setOpacity` have no UI control yet (no button wires them up) — they're
+verified by `Avatar.test.ts` and the scripted visual check above, but if you
+want to eyeball them yourself, drive them from the browser console via
+`import('/src/avatar/Avatar.ts')` against a live `Avatar` instance, or wait
+for the future Effect system to actually use them.
 
 ## Mobile-specific checks
 

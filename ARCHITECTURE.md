@@ -13,7 +13,8 @@ src/
   vision/     MediaPipe Tasks Vision wrapper (pose model load + per-frame detect)
   tracking/   raw landmarks -> smoothed, scene-space TrackingFrame
   rendering/  Three.js scene/camera/renderer/lighting/floor + render loop
-  avatar/     (not yet implemented — stylized humanoid representation)
+  avatar/     procedural humanoid mannequin (capsule-primitive limbs,
+              quaternion-oriented from tracked joint positions each frame)
   effects/    (not yet implemented — Shadow/Clone/Ghost/Reverse/Delay)
   recording/  (not yet implemented — canvas capture -> video file)
   ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
@@ -42,7 +43,13 @@ CameraController --(HTMLVideoElement)--> PoseVision.detect()
                                         v                          v
                                DebugSkeleton.update()      TrackingHistory.push()
                           (renders joints/bones in the      (ring-buffer snapshot,
-                           Three.js scene)                   for future Delay/Reverse)
+                           Three.js scene, dev-only)          for future Delay/Reverse)
+                                        |
+                                        v
+                               Avatar.updateFromTracking()
+                          (procedural mannequin: 15 capsule limb
+                           segments + head, quaternion-oriented
+                           between joint pairs each frame)
                                               |
                                               v
                                     SceneManager renders on a transparent
@@ -131,11 +138,61 @@ rendering — the skeleton simply updates less often on weak devices.
   (`App.describeError`) can show a specific, actionable message instead of
   a generic failure string.
 
+## Avatar (`avatar/Avatar.ts`)
+
+A lightweight procedural humanoid — no external 3D assets, every part is a
+Three.js primitive built once and reused. Structure:
+
+```
+root
+├─ torso group: head, neck, upper torso, lower torso, left arm, right arm
+└─ hips group: left leg, right leg
+```
+
+Each of the 15 limb segments (neck, torso halves, upper-arm/forearm/hand ×2,
+thigh/shin/foot ×2) is one capsule `Mesh` stretched and oriented between two
+tracked joint positions every frame — see `avatar/limbMath.ts:
+computeSegmentTransform()`. This is deliberately **not** a forward-kinematic
+chain (no segment's rotation is derived from its parent's rotation): each
+segment reads its own two endpoint positions straight from the
+already-computed `TrackingFrame`, which are independent per-joint scene
+positions (see the coordinate-mapping note above), not a rigid rig. That
+means one noisy joint can only ever perturb the one or two segments
+touching it, never propagate instability down a chain — directly serving
+"stay visually coherent while the user moves." Orientation is always a
+`Quaternion.setFromUnitVectors` (never Euler angles), which has no
+rotation-order ambiguity or gimbal lock for a single direction-align like
+this; `Avatar.setRotation()` (the whole-avatar override) uses Euler angles
+instead, which is fine there because it's one independent transform, not a
+chained sequence.
+
+- **Display modes**: `setDisplayMode('mannequin' | 'skeleton')` swaps which
+  of two pre-built materials each mesh uses (dark/neutral + soft emissive
+  for mannequin; brighter, thinner for skeleton) and toggles the head
+  mesh / joint-marker `InstancedMesh` visibility — it never creates or
+  destroys meshes.
+- **Reuse**: `avatar/avatarGeometry.ts` holds ONE shared capsule geometry
+  (used by all 15 limbs, differentiated only by each mesh's own
+  position/quaternion/scale) and ONE shared sphere geometry (head + joint
+  markers), as module-level singletons shared by every `Avatar` instance.
+  Materials are the one exception — each `Avatar` builds its own pair,
+  because `setOpacity()` must affect one instance without bleeding into
+  every other instance sharing the scene (relevant once Clone/Ghost create
+  multiple avatars).
+- **Shadow**: every limb mesh sets `castShadow`/`receiveShadow`, so the
+  floor/light/shadow-map already set up in `rendering/SceneManager.ts`
+  render a real soft shadow under the character — no new lighting was
+  needed for this.
+- **Visibility**: `updateFromTracking()` shows the avatar only when
+  `frame.present` is true, and otherwise freezes (does not reset) the last
+  pose — `setVisible()` is a separate, composable override (avatar hidden
+  = `visibleOverride && lastPresent`), independent of tracking state.
+
 ## Extending with a new effect (future work)
 
 The `effects/` module is intended to hold an `Effect` interface
 (`enable()/disable()/update(deltaTime, trackingState)/reset()`), each
-implementation consuming the same `TrackingFrame` that `DebugSkeleton`
-consumes today. `DebugSkeleton` itself is a development/verification tool,
-not the final avatar — the `avatar/` module (stylized humanoid/mannequin)
-is what effects will actually manipulate and render.
+implementation driving one or more `Avatar` instances from the same
+`TrackingFrame` (directly, or via `TrackingHistory` for Delay/Reverse).
+`DebugSkeleton` remains a separate, dev-only diagnostic — it is not, and
+was never meant to become, the final avatar.
