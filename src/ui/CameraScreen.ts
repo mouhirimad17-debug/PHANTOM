@@ -1,5 +1,6 @@
 import { requireElement } from '../utils/dom';
 import type { TrackingState } from '../types/tracking';
+import type { RecordingState } from '../types/recording';
 import type { CloneCount, CloneMode } from '../effects/CloneEffect';
 import type { ReversePreset } from '../effects/ReverseEffect';
 
@@ -21,6 +22,10 @@ export interface CameraScreenCallbacks {
   onGhostTrailToggle: (trailEnabled: boolean) => void;
   onReverseToggle: (active: boolean) => void;
   onReversePresetChange: (preset: ReversePreset) => void;
+  onRecordStart: () => void;
+  onRecordStop: () => void;
+  onRecordRetake: () => void;
+  onRecordDownload: () => void;
 }
 
 export interface DebugStats {
@@ -77,12 +82,22 @@ export class CameraScreen {
   private readonly reversePresetBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-reverse-preset]'));
   private readonly reversePreviewLabelEl = requireElement<HTMLElement>('reverse-preview-label-value');
 
+  private readonly recordControls = requireElement<HTMLElement>('record-controls');
+  private readonly recordToggleBtn = requireElement<HTMLButtonElement>('record-toggle-btn');
+  private readonly recordIndicator = requireElement<HTMLElement>('record-indicator');
+  private readonly recordErrorNote = requireElement<HTMLElement>('record-error-note');
+  private readonly recordUnsupportedNote = requireElement<HTMLElement>('record-unsupported-note');
+  private readonly recordingPreviewOverlay = requireElement<HTMLElement>('recording-preview');
+  private readonly recordingPreviewVideo = requireElement<HTMLVideoElement>('recording-preview-video');
+
   private debugVisible = false;
   private independentActive = false;
   private cloneActive = false;
   private ghostActive = false;
   private ghostTrailActive = true;
   private reverseActive = false;
+  private recordingState: RecordingState = 'idle';
+  private recordErrorTimeout: number | null = null;
 
   constructor(callbacks: CameraScreenCallbacks) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
@@ -94,6 +109,8 @@ export class CameraScreen {
     const ghostOpacitySlider = requireElement<HTMLInputElement>('ghost-opacity-slider');
     const ghostDelaySlider = requireElement<HTMLInputElement>('ghost-delay-slider');
     const ghostGlowSlider = requireElement<HTMLInputElement>('ghost-glow-slider');
+    const recordingSaveBtn = requireElement<HTMLButtonElement>('recording-save-btn');
+    const recordingRetakeBtn = requireElement<HTMLButtonElement>('recording-retake-btn');
 
     backBtn.addEventListener('click', () => callbacks.onBack());
     errorBackBtn.addEventListener('click', () => callbacks.onBack());
@@ -165,6 +182,13 @@ export class CameraScreen {
         callbacks.onReversePresetChange(btn.dataset['reversePreset'] as ReversePreset);
       });
     }
+
+    this.recordToggleBtn.addEventListener('click', () => {
+      if (this.recordingState === 'recording') callbacks.onRecordStop();
+      else callbacks.onRecordStart();
+    });
+    recordingSaveBtn.addEventListener('click', () => callbacks.onRecordDownload());
+    recordingRetakeBtn.addEventListener('click', () => callbacks.onRecordRetake());
   }
 
   private setCloneActive(active: boolean): void {
@@ -205,6 +229,46 @@ export class CameraScreen {
     this.reversePreviewLabelEl.textContent = label;
   }
 
+  /** Hides the RECORD button entirely and shows a short explanatory note instead — called once, at startup, from RecordingManager.isSupported(). */
+  setRecordingSupported(supported: boolean): void {
+    this.recordToggleBtn.classList.toggle('hidden', !supported);
+    this.recordUnsupportedNote.classList.toggle('hidden', supported);
+  }
+
+  /**
+   * Reflects RecordingManager's current state in the UI: the record
+   * button's icon/label, the pulsing REC indicator, and the local preview
+   * overlay (shown with `previewUrl` once `state === 'stopped'`, hidden
+   * otherwise). `previewUrl` is ignored unless `state === 'stopped'`.
+   */
+  updateRecordingState(state: RecordingState, previewUrl: string | null): void {
+    this.recordingState = state;
+    this.recordIndicator.classList.toggle('hidden', state !== 'recording');
+    this.recordToggleBtn.setAttribute('aria-pressed', String(state === 'recording'));
+    this.recordToggleBtn.setAttribute('aria-label', state === 'recording' ? 'Stop recording' : 'Start recording');
+    this.recordControls.classList.toggle('hidden', state === 'stopped');
+
+    if (state === 'stopped' && previewUrl) {
+      this.recordingPreviewVideo.src = previewUrl;
+      this.recordingPreviewOverlay.classList.remove('hidden');
+    } else {
+      this.recordingPreviewOverlay.classList.add('hidden');
+      this.recordingPreviewVideo.removeAttribute('src');
+      this.recordingPreviewVideo.load(); // release the previous source cleanly
+    }
+  }
+
+  /** Shows a short-lived inline error note near the record button (auto-hides — recording failures aren't fatal to the rest of the camera experience, unlike camera/vision errors). */
+  showRecordingError(message: string): void {
+    this.recordErrorNote.textContent = message;
+    this.recordErrorNote.classList.remove('hidden');
+    if (this.recordErrorTimeout !== null) window.clearTimeout(this.recordErrorTimeout);
+    this.recordErrorTimeout = window.setTimeout(() => {
+      this.recordErrorNote.classList.add('hidden');
+      this.recordErrorTimeout = null;
+    }, 4000);
+  }
+
   getContainer(): HTMLElement {
     return this.root;
   }
@@ -229,6 +293,12 @@ export class CameraScreen {
     this.setReverseActive(false);
     this.setSegmentedPressed(this.reversePresetBtns, this.reversePresetBtns.find((b) => b.dataset['reversePreset'] === 'MIRROR'));
     this.setReversePreviewLabel('Mirror'); // matches DEFAULT_REVERSE_PARAMS.preset
+    this.updateRecordingState('idle', null);
+    if (this.recordErrorTimeout !== null) {
+      window.clearTimeout(this.recordErrorTimeout);
+      this.recordErrorTimeout = null;
+    }
+    this.recordErrorNote.classList.add('hidden');
   }
 
   showLoading(): void {

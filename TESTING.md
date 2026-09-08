@@ -170,6 +170,23 @@ the smoothing feels on a real, noisy camera signal, or whether the mannequin
 actually *looks* like a coherent body — those are inherently
 manual/visual checks, see below.
 
+### Why RecordingManager has no vitest suite
+
+Every other browser-API-heavy leaf module in this codebase —
+`CameraController`, `PoseVision`, `CameraScreen`, `LandingScreen`, `App`
+itself — has never had a vitest unit test either, for the same reason:
+they're thin, mostly-untestable-in-isolation wrappers around real browser
+APIs (`getUserMedia`, MediaPipe's WASM runtime, `document`/DOM), verified
+instead by driving the real thing in a real browser (this project's vitest
+setup runs in plain Node, with no jsdom/happy-dom — deliberately not added
+just for this, to stay consistent with that existing precedent).
+`RecordingManager` follows the same pattern: it's built entirely on
+`HTMLCanvasElement`, `HTMLVideoElement`, `MediaRecorder`, and `Blob`/`URL`,
+none of which exist outside a real browser. It's verified instead by the
+scripted Chromium run below (using Chromium's built-in fake camera device,
+`--use-fake-device-for-media-stream`, so it needs no real webcam and no
+network) and the manual checklist further down.
+
 ## What was verified for the foundation stage
 
 Using a headless Chromium instance with a fake camera device
@@ -387,6 +404,66 @@ effect phase, this proves the transform math and preset wiring render
 correctly for the poses tested — it is not a substitute for judging how
 the effect feels against a real, continuously noisy camera feed. See the
 checklist below for that.
+
+## What was verified for Recording (this phase)
+
+Unlike every previous phase, this one doesn't bypass `PoseVision` with
+synthetic pose data — recording doesn't depend on pose tracking at all, so
+the sandbox's blocked-CDN issue is irrelevant here. Instead, Chromium was
+launched with `--use-fake-device-for-media-stream` and
+`--use-fake-ui-for-media-stream`, giving `getUserMedia({ video: true })` a
+real (synthetic-pattern) camera stream with no network dependency and no
+manual permission prompt to click through. The real, unmodified
+`SceneManager`, `Avatar`, and `RecordingManager` were then driven directly
+against that real video element and a real WebGL canvas. All 16 scripted
+checks passed with zero console/page errors:
+
+1. **The fake camera stream is genuinely active** (`videoWidth`/`videoHeight > 0`)
+   before recording is attempted.
+2. **`isSupported()` is `true`** in this Chromium build.
+3. **`start()` immediately reports `'recording'`.**
+4. **The composited output actually contains both sources**: a screenshot
+   of the *private* composite canvas, taken mid-recording, was saved and
+   visually inspected — it clearly shows the fake camera's test pattern
+   (background color, corner markers, moving wedge, timestamp text)
+   **and** the 3D avatar rendered on top, confirming the compositing
+   pipeline works end-to-end, not just in theory.
+5. **Stopping produces a non-empty `Blob`** with a `video/webm;codecs=vp9`
+   MIME type (this Chromium's top preference), and **`getPreviewUrl()`
+   returns a `blob:` URL.**
+6. **The state sequence is exactly `recording -> stopped`** for a normal
+   take (confirmed via the `onStateChange` callback's log, not just the
+   final `getState()` read).
+7. **`retake()` returns to `'idle'`** and clears both `getBlob()` and
+   `getPreviewUrl()` back to `null`.
+8. **A second take, recorded with `cameraMirrored: true`** (exercising the
+   manual-mirror draw path), stops cleanly and **`download()` does not
+   throw** (it triggers a native `<a download>` click — verifying an actual
+   browser save dialog/file requires a real, non-headless run, see the
+   manual checklist).
+9. **`reset()` called mid-recording** moves to `'idle'` *immediately*
+   (synchronously) and — checked again after waiting for the recorder's
+   asynchronous `onstop` to have fired — **stays `'idle'` with no blob**,
+   confirming the `discardOnStop` race guard described in ARCHITECTURE.md
+   actually prevents the late `onstop` from resurrecting a `'stopped'`
+   state.
+10. **A forced zero-size scene canvas makes `start()` throw
+    `RecordingError('zero-size-canvas')`.**
+11. **A video element with no active stream makes `start()` throw
+    `RecordingError('camera-unavailable')`.**
+12. **Temporarily removing `window.MediaRecorder`** makes `isSupported()`
+    return `false` and `start()` throw `RecordingError('unsupported')`.
+13. **Forcing WebGL context loss mid-recording** (via the real
+    `WEBGL_lose_context` extension, not a mock) makes `RecordingManager`
+    stop the recording and report a `RecordingError('context-lost')`
+    through `onError` — confirmed both that the error fired and that
+    `getState()` settled on `'stopped'` afterward (whatever was captured
+    before the loss is still available), not stuck or crashed.
+
+No microphone permission was requested at any point — `RecordingManager`
+never calls `getUserMedia` itself (see ARCHITECTURE.md); this is a
+structural guarantee from reading the source, not something that needs a
+runtime check.
 
 ## Manual verification checklist (run this in a real browser with a real camera)
 
@@ -795,6 +872,68 @@ Open the camera and tap **REVERSE** to enable the effect — a Mode selector
       movement — never like broken or lagging tracking.
 - [ ] Tracking loss (step out of frame) hides the phantom; stepping back
       in resumes correctly without a stale pose flash.
+
+## Manual verification: Recording (this phase)
+
+Open the camera (any effect(s) on or off — recording should work either
+way) and locate the round record button at the bottom of the screen.
+
+**Basic record/stop/retake cycle**
+
+- [ ] Tapping the record button starts recording: it turns into a square
+      "stop" icon, and a pulsing "● REC" indicator appears near the top of
+      the screen.
+- [ ] Tapping it again (now showing STOP) ends the recording and opens a
+      local preview overlay with a playable video, a SAVE button, and a
+      RETAKE button.
+- [ ] The preview video shows **both** your live camera feed **and**
+      whatever effect(s) were active while recording — not just the 3D
+      overlay on a black/transparent background, and not just the raw
+      camera feed with no effect.
+- [ ] The preview plays back with standard `<video>` controls (play/pause/
+      scrub).
+- [ ] Tapping RETAKE closes the preview and returns to the live camera
+      view with the record button ready to record again.
+- [ ] Tapping SAVE triggers your browser's normal file-save/download
+      behavior for the recorded video (a downloads-folder save, or a
+      "Save As" prompt, depending on your browser/OS) — check the saved
+      file actually plays in a normal video player.
+
+**What the recording should match**
+
+- [ ] The mirroring in the recording matches what you saw live while
+      recording (front camera: mirrored selfie view; if you have a rear-
+      camera device to test, unmirrored).
+- [ ] The recorded framing matches the live on-screen framing (not
+      stretched, squashed, or showing extra video outside what was
+      visible on screen) — this exercises the same `object-fit: cover`
+      crop math as the skeleton/avatar overlay.
+- [ ] Recording, stopping, then immediately starting a new recording
+      (without tapping RETAKE first) works cleanly and discards the
+      previous take.
+
+**Guardrails and edge cases**
+
+- [ ] No microphone permission prompt ever appears, before, during, or
+      after recording.
+- [ ] Leaving the camera screen (BACK) while a recording is in progress
+      does not crash or leave the app in a broken state; re-entering the
+      camera screen shows the record button ready to go, with no leftover
+      preview from the previous session.
+- [ ] If your browser doesn't support recording (older Safari/Firefox
+      versions are the most likely candidates), the record button doesn't
+      appear at all, and a short "Recording isn't supported in this
+      browser" note is shown instead — the rest of the app (camera,
+      effects) still works normally.
+- [ ] Resize the browser window (or rotate a mobile device) right as you
+      tap record — the recording should either start normally against the
+      new size or show a brief inline error, never silently produce a
+      corrupt/empty file.
+- [ ] (If you can force it — e.g. via `chrome://gpu` "Reset" while
+      recording, or unplugging an external GPU) losing the WebGL context
+      mid-recording stops the recording gracefully rather than crashing
+      the tab; whatever was captured up to that point should still be
+      available in the preview.
 
 ## Mobile-specific checks
 

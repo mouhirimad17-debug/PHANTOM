@@ -33,6 +33,7 @@ export class SceneManager {
 
   private readonly timer = new Timer();
   private readonly listeners = new Set<FrameListener>();
+  private readonly afterRenderListeners = new Set<FrameListener>();
   private rafHandle: number | null = null;
   private container: HTMLElement | null = null;
   private readonly resizeObserver: ResizeObserver;
@@ -109,6 +110,21 @@ export class SceneManager {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Like `onFrame`, but fires immediately AFTER `renderer.render()` for
+   * that tick rather than before it. `onFrame` listeners run first
+   * specifically so effects can update the scene graph in time for that
+   * same frame's render call — reordering that would make every effect
+   * lag a frame behind. Anything that needs to read the just-rendered
+   * canvas pixels (e.g. RecordingManager compositing it with the camera
+   * feed) needs this hook instead, or it would capture the previous
+   * frame's content.
+   */
+  onAfterRender(listener: FrameListener): () => void {
+    this.afterRenderListeners.add(listener);
+    return () => this.afterRenderListeners.delete(listener);
+  }
+
   start(): void {
     if (this.rafHandle !== null) return;
     this.timer.reset();
@@ -120,6 +136,9 @@ export class SceneManager {
         listener(delta, elapsed);
       }
       this.renderer.render(this.scene, this.camera);
+      for (const listener of this.afterRenderListeners) {
+        listener(delta, elapsed);
+      }
       this.rafHandle = requestAnimationFrame(tick);
     };
     this.rafHandle = requestAnimationFrame(tick);
@@ -137,6 +156,7 @@ export class SceneManager {
     this.timer.dispose();
     this.resizeObserver.disconnect();
     this.listeners.clear();
+    this.afterRenderListeners.clear();
     this.renderer.dispose();
   }
 }

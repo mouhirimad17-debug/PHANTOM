@@ -17,7 +17,8 @@ src/
               quaternion-oriented from tracked joint positions each frame)
   effects/    Effect interface + implementations: IndependentShadowEffect,
               CloneEffect, GhostEffect, ReverseEffect (Delay not yet implemented)
-  recording/  (not yet implemented — canvas capture -> video file)
+  recording/  RecordingManager — composites the camera frame + Three.js
+              render into one canvas and records it locally via MediaRecorder
   ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
   utils/      shared, dependency-free helpers (math, DOM, FPS, pose landmark constants)
   types/      shared TypeScript types/errors, no runtime logic
@@ -533,3 +534,108 @@ by having each `enable()` call `setVisible(true)` on its own avatar(s) (all
 pool slots, for `CloneEffect`) before the first `update()` re-derives the
 correct per-slot visibility. Covered by a new regression test in each of
 the four effects' suites.
+
+## Recording (`recording/RecordingManager.ts`)
+
+Lets the user save a short local video of the camera scene with whatever
+effect is currently visible — entirely on-device, nothing ever uploaded.
+
+**Why compositing is unavoidable, not just a fallback**: what the user sees
+is never one element. The live `<video>` is CSS-mirrored/cropped
+(`object-fit: cover`), and `#scene-canvas` is a *separate*, deliberately
+transparent WebGL canvas layered on top by the page (see the mirroring
+note above). `videoElement.captureStream()` alone would miss the 3D effect
+entirely; `sceneCanvas.captureStream()` alone would capture only a
+transparent overlay with no camera image. Browsers also have no API to
+merge two independent `MediaStream`s into one recorded frame — there is no
+"direct capture of both" path to prefer over compositing here, today. So
+`RecordingManager` always composites: a private, off-DOM 2D `<canvas>` is
+redrawn every rendered frame —
+
+```
+camera <video> frame (cropped + mirrored to match what's on screen)
+                            +
+transparent #scene-canvas (the just-rendered Three.js output)
+                            v
+                  composite 2D <canvas>
+                            v
+         composite.captureStream(30) -> MediaRecorder
+```
+
+— and *that* composite canvas feeds a native `MediaRecorder` via
+`HTMLCanvasElement.captureStream()`. This is the "browser-native recording
+pipeline" this module prefers, in the sense that matters: real, hardware-
+backed encoding through `MediaRecorder`, never a JS/WASM software encoder.
+
+- **Frame timing correctness**: `SceneManager.onFrame()` listeners (used by
+  every effect) run *before* `renderer.render()` for that tick — on
+  purpose, so effects can update the scene graph in time to be rendered
+  that same frame. Reading the canvas from an `onFrame` listener would
+  therefore capture the *previous* frame's pixels. `SceneManager` gained a
+  second, purely additive hook, `onAfterRender()`, firing immediately after
+  `render()`, which `RecordingManager` uses instead — the only reason this
+  hook exists.
+- **Crop/mirror reuse**: the composite draw reuses `utils/math.ts`'s
+  existing `computeCoverCrop()` (the same function `CoordinateMapper`
+  already uses to keep the skeleton aligned with the displayed video) to
+  crop the source video frame identically to what `object-fit: cover`
+  shows on screen, then applies the same horizontal flip as `#camera-video`'s
+  CSS `scaleX(-1)` manually (`drawImage()` always draws a video's raw,
+  unmirrored pixels regardless of any CSS transform on the element, so the
+  mirror has to be reproduced in the 2D context). `cameraMirrored` is
+  passed into `start()` from `App.ts`'s existing single source of truth
+  (the same boolean already fed to `TrackingManager.setCameraMirrored()`
+  and `CameraScreen.setMirrored()`) rather than recomputed — one flag,
+  three consumers, never allowed to disagree.
+- **Support detection**: `isSupported()` checks for
+  `HTMLCanvasElement.prototype.captureStream` and a `MediaRecorder`-
+  supported mime type (`MediaRecorder.isTypeSupported()`, checked against a
+  preference list — VP9-in-WebM, then VP8-in-WebM, then plain WebM, then
+  `video/mp4` for Safari) once at construction. The UI hides the RECORD
+  button entirely and shows a short note instead when this is false,
+  rather than letting the user tap a control that can only fail.
+- **No microphone, ever**: `RecordingManager` never calls `getUserMedia`
+  itself — it only reads the already-active camera `<video>` element and
+  `canvas.captureStream()`, neither of which needs (or triggers) any
+  browser permission prompt. There is structurally no code path here that
+  could request microphone access.
+- **Typed errors** (`types/recording.ts: RecordingError`, following the
+  exact `CameraError`/`VisionError` pattern): pre-flight failures —
+  `unsupported`, `camera-unavailable` (the camera video has no current
+  frame — e.g. called before the camera finished starting), `zero-size-canvas`
+  (the scene canvas has no visible pixels yet, e.g. mid-layout) —
+  are thrown synchronously from `start()`, exactly like
+  `CameraController.start()` throwing `CameraError`. Failures that can only
+  happen *after* `start()` has already returned — a `MediaRecorder` runtime
+  error, or losing the WebGL context mid-recording (`context-lost`, via a
+  `webglcontextlost` listener `RecordingManager` adds directly to the scene
+  canvas, independent of `SceneManager`'s own listener on the same
+  element) — are reported through an `onError` callback instead, since
+  there's no caller left to throw to.
+- **State machine** (`RecordingState`): `'idle' -> 'recording' -> 'stopped'`,
+  with `retake()` returning `'stopped' -> 'idle'` and starting a new
+  recording implicitly discarding whatever was previously `'stopped'`.
+  `reset()` (called from `App.exitCamera()`, matching every effect's own
+  `reset()`) can be invoked mid-recording — a `discardOnStop` flag ensures
+  the recorder's asynchronous `onstop` (which fires *after* `reset()` has
+  already synchronously moved the state back to `'idle'`) discards its
+  result instead of resurrecting a `'stopped'` state and leaking an object
+  URL nobody will ever revoke. `dispose()` uses the same guard.
+- **Local-only outputs, explicitly released**: the only outputs are an
+  in-memory `Blob` and a `URL.createObjectURL()` object URL for local
+  `<video>` preview/download — never anything sent over the network. The
+  object URL is revoked (`URL.revokeObjectURL()`) on `retake()`, at the
+  start of every new recording, and in `dispose()`, so a session that
+  records several times never accumulates unreleased blob URLs.
+- **Download**: a plain `<a download>` anchor, clicked programmatically —
+  the standard, broadly-supported local-save mechanism, requiring no extra
+  permission and no heavier API (like File System Access, which Safari
+  doesn't implement).
+- **No per-frame allocation beyond the unavoidable**: the composite canvas,
+  its 2D context, and the `webglcontextlost` listener are all created once,
+  in the constructor. Each `onAfterRender` tick only calls `drawImage()`
+  twice and, once per finished take, allocates one `Blob` — there is no
+  steady-state growth from repeated start/stop cycles.
+- **Default frame rate**: `captureStream(30)` — a reasonable default for a
+  short clip; not currently exposed as a setting (no requirement asked for
+  one).

@@ -12,6 +12,8 @@ import { IndependentShadowEffect } from '../effects/IndependentShadowEffect';
 import { CloneEffect, type CloneCount, type CloneMode } from '../effects/CloneEffect';
 import { GhostEffect } from '../effects/GhostEffect';
 import { ReverseEffect, type ReversePreset } from '../effects/ReverseEffect';
+import { RecordingManager } from '../recording/RecordingManager';
+import { RecordingError } from '../types/recording';
 import { LandingScreen } from '../ui/LandingScreen';
 import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
@@ -51,8 +53,10 @@ export class App {
   private cloneEffect: CloneEffect | null = null;
   private ghostEffect: GhostEffect | null = null;
   private reverseEffect: ReverseEffect | null = null;
+  private recordingManager: RecordingManager | null = null;
 
   private facing: CameraFacing = 'user';
+  private cameraMirrored = false;
   private lastDetectMs = -Infinity;
   private detectIntervalMs = MIN_DETECT_INTERVAL_MS;
   private avgDetectDurationMs = 0;
@@ -94,6 +98,16 @@ export class App {
         this.reverseEffect?.configure({ preset });
         this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
       },
+      onRecordStart: () => {
+        try {
+          this.recordingManager?.start(this.cameraMirrored);
+        } catch (err) {
+          this.cameraScreen.showRecordingError(this.describeRecordingError(err));
+        }
+      },
+      onRecordStop: () => this.recordingManager?.stop(),
+      onRecordRetake: () => this.recordingManager?.retake(),
+      onRecordDownload: () => this.recordingManager?.download(),
     });
     this.landingScreen = new LandingScreen({
       onEnterCamera: () => void this.enterCamera(),
@@ -111,6 +125,12 @@ export class App {
       const cloneEffect = new CloneEffect(sceneManager.scene);
       const ghostEffect = new GhostEffect(sceneManager.scene);
       const reverseEffect = new ReverseEffect(sceneManager.scene);
+      const recordingManager = new RecordingManager(sceneManager, this.cameraScreen.videoElement, {
+        onStateChange: (state) =>
+          this.cameraScreen.updateRecordingState(state, state === 'stopped' ? recordingManager.getPreviewUrl() : null),
+        onError: (error) => this.cameraScreen.showRecordingError(this.describeRecordingError(error)),
+      });
+      this.cameraScreen.setRecordingSupported(recordingManager.isSupported());
 
       sceneManager.onFrame((delta) =>
         this.handleFrame(
@@ -133,6 +153,7 @@ export class App {
       this.cloneEffect = cloneEffect;
       this.ghostEffect = ghostEffect;
       this.reverseEffect = reverseEffect;
+      this.recordingManager = recordingManager;
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
@@ -172,9 +193,9 @@ export class App {
       // applies the matching software mirror exactly once (see
       // transformLandmarkForRender). Never mirror both the CSS layer and
       // the canvas — see the comment on #scene-canvas in styles.css.
-      const cameraMirrored = this.facing === 'user';
-      trackingManager.setCameraMirrored(cameraMirrored);
-      this.cameraScreen.setMirrored(cameraMirrored);
+      this.cameraMirrored = this.facing === 'user';
+      trackingManager.setCameraMirrored(this.cameraMirrored);
+      this.cameraScreen.setMirrored(this.cameraMirrored);
 
       this.cameraScreen.hideLoading();
       sceneManager.start();
@@ -192,6 +213,7 @@ export class App {
     this.cloneEffect?.reset();
     this.ghostEffect?.reset();
     this.reverseEffect?.reset();
+    this.recordingManager?.reset();
     this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
@@ -347,5 +369,28 @@ export class App {
       return err.message;
     }
     return 'An unknown error occurred.';
+  }
+
+  private describeRecordingError(err: unknown): string {
+    if (err instanceof RecordingError) {
+      switch (err.type) {
+        case 'unsupported':
+          return 'Recording is not supported in this browser.';
+        case 'camera-unavailable':
+          return 'The camera is not currently active — cannot start recording.';
+        case 'zero-size-canvas':
+          return 'The camera view has no visible size yet — try again in a moment.';
+        case 'context-lost':
+          return 'Recording stopped: the 3D renderer lost its WebGL context.';
+        case 'start-failed':
+          return 'Recording could not be started.';
+        default:
+          return 'An unknown recording error occurred.';
+      }
+    }
+    if (err instanceof Error) {
+      return err.message;
+    }
+    return 'An unknown recording error occurred.';
   }
 }

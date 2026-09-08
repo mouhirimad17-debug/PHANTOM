@@ -121,6 +121,24 @@
           </div>
         </div>
 
+        <div id="record-indicator" class="record-indicator hidden"><span class="record-dot"></span>REC</div>
+
+        <div id="record-controls" class="record-controls">
+          <p id="record-error-note" class="record-note hidden"></p>
+          <p id="record-unsupported-note" class="record-note hidden">Recording isn't supported in this browser.</p>
+          <button id="record-toggle-btn" class="record-btn" type="button" aria-label="Start recording" aria-pressed="false">
+            <span class="record-btn-icon"></span>
+          </button>
+        </div>
+
+        <div id="recording-preview" class="overlay hidden">
+          <video id="recording-preview-video" class="recording-preview-video" playsinline controls></video>
+          <div class="overlay-actions">
+            <button id="recording-save-btn" class="btn btn-primary" type="button">SAVE</button>
+            <button id="recording-retake-btn" class="btn btn-secondary" type="button">RETAKE</button>
+          </div>
+        </div>
+
         <div id="camera-loading" class="overlay hidden">
           <p>Initializing camera &amp; pose model&hellip;</p>
         </div>

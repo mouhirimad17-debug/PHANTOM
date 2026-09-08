@@ -89,6 +89,27 @@
       `avatar.setVisible(false)`, so a real toggle-off-then-on cycle would
       leave an effect permanently invisible — see ARCHITECTURE.md's
       ReverseEffect section and TESTING.md for the full writeup.
+- [x] **Recording module** (`recording/RecordingManager.ts`) — records the
+      composed camera + Three.js output locally, never uploaded anywhere.
+      Always composites (camera frame, then the transparent scene canvas,
+      drawn into a private off-DOM 2D canvas every rendered frame — reusing
+      the existing `computeCoverCrop()` crop math and the same
+      `cameraMirrored` single source of truth used elsewhere) since
+      browsers have no API to merge two independent capture streams, then
+      feeds that composite canvas into a native `MediaRecorder` via
+      `HTMLCanvasElement.captureStream()` — real browser-native encoding,
+      no JS/WASM software encoder. `SceneManager` gained a purely additive
+      `onAfterRender()` hook so the composite is drawn from the
+      just-rendered frame, not the previous one. Typed `RecordingError`s
+      (matching `CameraError`/`VisionError`) for unsupported browsers, an
+      inactive camera, a zero-size canvas, and WebGL context loss;
+      `retake()`/`reset()` guard against a race where the recorder's async
+      `onstop` could resurrect a discarded recording. Never requests
+      microphone access. UI: a bottom-center RECORD/STOP button, a pulsing
+      REC indicator, and a local preview overlay with SAVE (native
+      `<a download>`) and RETAKE. See ARCHITECTURE.md and TESTING.md for
+      the full design and the scripted-Chromium (fake camera device)
+      verification.
 
 ## Not yet implemented
 
@@ -105,8 +126,6 @@
       IndependentShadowEffect exists, with its own dedicated toggle button
       rather than a general selector — revisit once there's more than one
       effect to choose between).
-- [ ] **Recording module** — composed canvas capture -> downloadable video
-      file (`recording/`), record/stop UI, never uploaded anywhere.
 - [ ] **Reset button** UI (once there's per-session state worth resetting —
       e.g. clone count, effect parameters).
 - [ ] Back/front camera switch button UI (the `CameraController.switchFacing()`
