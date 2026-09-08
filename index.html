@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#05070a" />
+    <title>PHANTOM</title>
+  </head>
+  <body>
+    <main id="app">
+      <section id="landing-screen" class="screen">
+        <div class="landing-content">
+          <h1 class="brand">PHANTOM</h1>
+          <p class="tagline">Make the impossible appear on camera.</p>
+          <button id="enter-camera-btn" class="btn btn-primary" type="button">ENTER CAMERA</button>
+          <button id="how-it-works-btn" class="btn btn-secondary" type="button">HOW IT WORKS</button>
+        </div>
+        <div id="how-it-works-panel" class="info-panel hidden">
+          <h2>How it works</h2>
+          <p>
+            PHANTOM opens your camera and detects your body's pose entirely on your device — nothing is
+            ever uploaded. A virtual representation of your body is drawn into the live camera view and
+            tracks your movement in real time.
+          </p>
+          <button id="close-how-it-works-btn" class="btn btn-secondary" type="button">Close</button>
+        </div>
+      </section>
+
+      <section id="camera-screen" class="screen hidden">
+        <video id="camera-video" playsinline muted></video>
+        <canvas id="scene-canvas"></canvas>
+
+        <div id="camera-topbar">
+          <button id="back-btn" class="icon-btn" type="button" aria-label="Back to landing screen">&#8592;</button>
+          <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
+        </div>
+
+        <div id="debug-panel" class="panel hidden">
+          <div class="debug-row"><span>FPS</span><span id="fps-value">0</span></div>
+          <div class="debug-row"><span>Vision</span><span id="vision-status-value">-</span></div>
+          <div class="debug-row"><span>Pose</span><span id="pose-status-value">-</span></div>
+          <div class="debug-row"><span>Confidence</span><span id="confidence-value">-</span></div>
+        </div>
+
+        <div id="camera-loading" class="overlay hidden">
+          <p>Initializing camera &amp; pose model&hellip;</p>
+        </div>
+
+        <div id="camera-error" class="overlay hidden">
+          <p id="camera-error-message"></p>
+          <div class="overlay-actions">
+            <button id="camera-error-retry-btn" class="btn btn-primary" type="button">Try Again</button>
+            <button id="camera-error-back-btn" class="btn btn-secondary" type="button">Back</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,243 @@
+:root {
+  color-scheme: dark;
+  --bg: #05070a;
+  --accent: #00ffc8;
+  --danger: #ff4d6d;
+  --text: #eef7f4;
+  --text-dim: #9fb4ad;
+  --panel-bg: rgba(8, 14, 14, 0.72);
+  --panel-border: rgba(0, 255, 200, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  overscroll-behavior: none;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- Landing screen ---------- */
+
+#landing-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(0, 255, 200, 0.08), transparent 60%),
+    var(--bg);
+}
+
+.landing-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.brand {
+  font-size: clamp(2.5rem, 10vw, 4rem);
+  letter-spacing: 0.35em;
+  margin: 0;
+  padding-left: 0.35em; /* optically balance the letter-spacing */
+  text-shadow: 0 0 24px rgba(0, 255, 200, 0.45);
+}
+
+.tagline {
+  color: var(--text-dim);
+  margin: 0 0 1.5rem;
+  font-size: 1rem;
+}
+
+.btn {
+  min-height: 52px;
+  min-width: 220px;
+  padding: 0.9rem 1.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #00201a;
+  border: none;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+}
+
+.info-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 2rem;
+  background: rgba(5, 7, 10, 0.94);
+  text-align: center;
+}
+
+.info-panel p {
+  max-width: 32rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ---------- Camera screen ---------- */
+
+#camera-screen {
+  background: #000;
+}
+
+#camera-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+#camera-video.unmirrored {
+  transform: none;
+}
+
+#scene-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: scaleX(-1);
+}
+
+#scene-canvas.unmirrored {
+  transform: none;
+}
+
+#camera-topbar {
+  position: absolute;
+  top: max(1rem, env(safe-area-inset-top));
+  left: 1rem;
+  right: 1rem;
+  display: flex;
+  justify-content: space-between;
+  z-index: 10;
+}
+
+.icon-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  backdrop-filter: blur(8px);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.panel {
+  position: absolute;
+  top: calc(max(1rem, env(safe-area-inset-top)) + 56px);
+  left: 1rem;
+  z-index: 10;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 0.6rem 0.9rem;
+  backdrop-filter: blur(8px);
+  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 160px;
+}
+
+.debug-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--text-dim);
+}
+
+.debug-row span:last-child {
+  color: var(--accent);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 2rem;
+  text-align: center;
+  background: rgba(5, 7, 10, 0.92);
+}
+
+.overlay p {
+  max-width: 28rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
