@@ -110,6 +110,30 @@
       `<a download>`) and RETAKE. See ARCHITECTURE.md and TESTING.md for
       the full design and the scripted-Chromium (fake camera device)
       verification.
+- [x] **UI polish pass** — experimental/futuristic/minimal/premium/cinematic
+      redesign of `index.html`/`styles.css`/`CameraScreen.ts`/`LandingScreen.ts`,
+      presentation only (no effect/recording/tracking logic changed).
+      Camera screen restructured into a top HUD (brand + a live status pill
+      that's the first user-facing "tracking lost" indicator, not just a
+      DEBUG-only readout), a persistent effect rail (SHADOW/CLONE/GHOST/
+      REVERSE, plus a genuinely `disabled` DELAY chip — listed honestly, not
+      faked), a three-control bottom bar (camera-switch/RECORD/settings),
+      and one on-demand settings drawer (native `<details>`/`<summary>`
+      sections) replacing three separate always-on floating panels — so
+      nothing but two slim bars and a chip row sits over the camera feed
+      permanently. Wired the camera-switch button to the already-existing
+      `CameraController.switchFacing()`/`canSwitchFacing` capability (no new
+      camera logic). Added a proactive unsupported-device check on the
+      landing screen (disables ENTER CAMERA with an inline note instead of
+      letting the user hit a dead end) and a generic, auto-dismissing inline
+      `showNote()` toast for non-fatal failures (never a native `alert()`).
+      Global `:focus-visible` styling, `aria-label`s on every icon button,
+      `role="status"`/`role="alert"` on live regions, 44px-minimum touch
+      targets (measured, not eyeballed), and `env(safe-area-inset-*)` on
+      every edge (including left/right for landscape) throughout. See
+      ARCHITECTURE.md's "UI / design system" section and TESTING.md for the
+      full design rationale and verification (including a real layout bug —
+      an overlapping toast/effect-rail — caught and fixed during this pass).
 
 ## Not yet implemented
 
@@ -121,17 +145,16 @@
 - [ ] **DelayEffect** — avatar driven by a short historical pose buffer (the
       `TrackingHistory` + delayed-target pattern already exists in
       `IndependentShadowEffect`; this would be that pattern without the
-      spring/drift/flatten on top).
-- [ ] **Effect selector UI** on the camera screen (currently only
-      IndependentShadowEffect exists, with its own dedicated toggle button
-      rather than a general selector — revisit once there's more than one
-      effect to choose between).
-- [ ] **Reset button** UI (once there's per-session state worth resetting —
-      e.g. clone count, effect parameters).
-- [ ] Back/front camera switch button UI (the `CameraController.switchFacing()`
-      capability already exists; no UI trigger yet).
+      spring/drift/flatten on top). The effect rail already has a disabled
+      DELAY chip reserved for it.
+- [ ] **Reset button** UI (once there's per-session state worth resetting
+      globally, beyond CloneEffect's own existing RESET ALL — e.g. reset
+      every active effect's parameters at once).
 - [ ] UI trigger for `Avatar.setDisplayMode()` (skeleton/mannequin) — the
-      capability exists and is tested, nothing in the UI calls it yet.
+      capability exists and is tested, nothing in the UI calls it yet. (Not
+      to be confused with the settings drawer's "Skeleton overlay" toggle,
+      which shows/hides the separate `DebugSkeleton` diagnostic overlay, not
+      the base avatar's own display mode.)
 - [ ] Bundle-size optimization: lazy-load MediaPipe Tasks Vision (and
       possibly Three.js) on first "ENTER CAMERA" click instead of eagerly on
       page load, to keep the landing screen light on mobile.

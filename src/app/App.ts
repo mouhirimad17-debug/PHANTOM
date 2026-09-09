@@ -21,7 +21,7 @@ import { clamp } from '../utils/math';
 import { isWebGLAvailable } from '../utils/webgl';
 
 const NO_EFFECT_LABEL = 'None (base avatar)';
-const INDEPENDENT_SHADOW_LABEL = 'Independent Shadow';
+const INDEPENDENT_SHADOW_LABEL = 'Shadow';
 const GHOST_LABEL = 'Ghost';
 
 // Pose inference is throttled independently of the render loop (which stays
@@ -68,6 +68,7 @@ export class App {
     this.cameraScreen = new CameraScreen({
       onBack: () => this.exitCamera(),
       onRetry: () => void this.enterCamera(),
+      onCameraSwitch: () => void this.switchCamera(),
       onDebugToggle: (visible) => this.debugSkeleton?.setVisible(visible),
       onIndependentShadowToggle: (active) => {
         if (active) this.independentShadowEffect?.enable();
@@ -102,7 +103,7 @@ export class App {
         try {
           this.recordingManager?.start(this.cameraMirrored);
         } catch (err) {
-          this.cameraScreen.showRecordingError(this.describeRecordingError(err));
+          this.cameraScreen.showNote(this.describeRecordingError(err));
         }
       },
       onRecordStop: () => this.recordingManager?.stop(),
@@ -128,7 +129,7 @@ export class App {
       const recordingManager = new RecordingManager(sceneManager, this.cameraScreen.videoElement, {
         onStateChange: (state) =>
           this.cameraScreen.updateRecordingState(state, state === 'stopped' ? recordingManager.getPreviewUrl() : null),
-        onError: (error) => this.cameraScreen.showRecordingError(this.describeRecordingError(error)),
+        onError: (error) => this.cameraScreen.showNote(this.describeRecordingError(error)),
       });
       this.cameraScreen.setRecordingSupported(recordingManager.isSupported());
 
@@ -157,6 +158,17 @@ export class App {
     }
 
     window.addEventListener('resize', () => this.trackingManager?.notifyViewportChanged());
+
+    // Proactive unsupported-device check: rather than letting the user tap
+    // ENTER CAMERA and hit a dead end, tell them up front when a hard
+    // requirement is already known to be missing.
+    if (!this.webglAvailable) {
+      this.landingScreen.setUnsupported(
+        'This browser or device does not support WebGL, which PHANTOM requires for its 3D overlay.',
+      );
+    } else if (!navigator.mediaDevices?.getUserMedia) {
+      this.landingScreen.setUnsupported('This browser does not support camera access.');
+    }
   }
 
   start(): void {
@@ -196,11 +208,36 @@ export class App {
       this.cameraMirrored = this.facing === 'user';
       trackingManager.setCameraMirrored(this.cameraMirrored);
       this.cameraScreen.setMirrored(this.cameraMirrored);
+      this.cameraScreen.setCameraSwitchAvailable(this.camera.getStatus().canSwitchFacing);
 
       this.cameraScreen.hideLoading();
       sceneManager.start();
     } catch (err) {
       this.handleFatalError(err);
+    }
+  }
+
+  /** Switches between front/back camera, re-deriving mirroring and video aspect for the new stream — see the mirroring comment in enterCamera(). */
+  private async switchCamera(): Promise<void> {
+    if (!this.camera.isActive() || !this.trackingManager) return;
+
+    this.cameraScreen.setCameraSwitchBusy(true);
+    try {
+      await this.camera.switchFacing();
+
+      const video = this.cameraScreen.videoElement;
+      this.trackingManager.setVideoAspect(video.videoWidth / video.videoHeight);
+      const status = this.camera.getStatus();
+      this.facing = status.facing ?? this.facing;
+      this.cameraMirrored = this.facing === 'user';
+      this.trackingManager.setCameraMirrored(this.cameraMirrored);
+      this.cameraScreen.setMirrored(this.cameraMirrored);
+      this.cameraScreen.setCameraSwitchAvailable(status.canSwitchFacing);
+    } catch (err) {
+      console.error('[PHANTOM] Failed to switch camera.', err);
+      this.cameraScreen.showNote(this.describeError(err));
+    } finally {
+      this.cameraScreen.setCameraSwitchBusy(false);
     }
   }
 

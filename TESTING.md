@@ -465,6 +465,78 @@ never calls `getUserMedia` itself (see ARCHITECTURE.md); this is a
 structural guarantee from reading the source, not something that needs a
 runtime check.
 
+## What was verified for the UI polish (this phase)
+
+This phase changed only `index.html`/`styles.css`/`CameraScreen.ts`/
+`LandingScreen.ts` (presentation) plus two small, additive `App.ts` hooks
+(`onCameraSwitch`, the proactive unsupported-device check) — no effect,
+recording, or tracking logic changed. `npx tsc --noEmit`, `npx vitest run`
+(122/122, unchanged from before this phase — nothing here touches code any
+existing test exercises), and `npm run build` all pass.
+
+Because this phase is UI-only, the sandbox's usual blockers (no MediaPipe
+CDN access, no real webcam) don't need working around with synthetic pose
+data — but `App.enterCamera()` still requires `PoseVision.init()` to
+succeed before it ever calls `sceneManager.start()` or shows the camera
+screen, and that still can't complete in this sandbox. So instead of
+driving the real button-click flow start to finish, the real page was
+loaded (so the real `App` — and therefore the real, fully-wired
+`CameraScreen`, bound to the real DOM) was running, then the camera
+screen's `hidden` class was toggled directly to reveal it, and every
+control was exercised for real from there — a real click on a chip calls
+the real `App.ts` callback, which calls the real effect's `enable()`.
+22 of 23 scripted checks passed (the one "failure" is the test script's
+own overly strict string match tripping on the source HTML's line-wrapped
+whitespace in a paragraph of copy — the actual rendered/announced text is
+correct, confirmed by reading the same string back manually):
+
+1. **Landing copy matches the spec exactly**: `PHANTOM`, `MAKE THE
+   IMPOSSIBLE APPEAR.`, `ENTER CAMERA`, and the "Processing happens locally
+   on this device." caption are all present as specified.
+2. **ENTER CAMERA is enabled** in a browser where WebGL and the camera API
+   are both available (confirming the proactive unsupported-check doesn't
+   false-positive).
+3. **How it works**: opens, moves focus to its Close button, and its copy
+   states every effect is a visual illusion and nothing is physically
+   real; **Escape closes it and returns focus** to the button that opened
+   it.
+4. **The status indicator** starts in an "INITIALIZING"/"SEARCHING" state
+   before any tracking data exists.
+5. **Every effect chip** (SHADOW/CLONE/GHOST/REVERSE) measures at least
+   44px in its smallest dimension, and clicking one **flips its real
+   `aria-pressed` state through the real `App.ts` wiring** (confirmed via
+   the actual attribute, not a mock).
+6. **The DELAY chip is a genuine, natively `disabled` `<button>`** — not a
+   control that merely looks inert while secretly being clickable.
+7. **The settings drawer** opens (moving focus to its close button),
+   contains exactly 5 semantic `<details class="settings-section">`
+   elements, closes via Escape (returning focus to the gear button) and
+   separately via clicking the scrim.
+8. **The camera-switch control starts hidden** (since availability is only
+   confirmed after a real camera stream starts, which this bypassed flow
+   never reaches) — the correct default-safe state.
+9. **The record button** measures well above the 44px minimum, and
+   clicking it with no active camera stream **throws through the real
+   `RecordingManager.start()` pre-flight check and surfaces as an inline
+   toast** (`showNote()`) — not a native `alert()`, and not a silent
+   failure.
+10. **The privacy caption** appears both on the landing screen and inside
+    the settings drawer.
+11. **Tab order** from the back button moves through a sequence of real,
+    named interactive elements (chips, record button, settings button) —
+    confirmed by reading `document.activeElement` after each keypress, not
+    assumed from DOM order.
+12. **The focused element has a real, non-transparent outline color**
+    (`rgb(0, 255, 200)`, the accent token) — the global `:focus-visible`
+    rule actually applies, not just present in the stylesheet unused.
+
+**A real layout bug this process caught and fixed**: the first render of
+the "camera unavailable" toast visually overlapped the effect rail chips
+behind it — both were positioned at the same distance from the bottom
+edge. Fixed by moving the toast (and the record-unsupported note, which
+shared the same rule) further up, confirmed by re-screenshotting before
+and after.
+
 ## Manual verification checklist (run this in a real browser with a real camera)
 
 Run `npm run dev`, open `http://localhost:5173` in a real desktop browser
@@ -934,6 +1006,92 @@ way) and locate the round record button at the bottom of the screen.
       mid-recording stops the recording gracefully rather than crashing
       the tab; whatever was captured up to that point should still be
       available in the preview.
+
+## Manual verification: UI polish (this phase)
+
+**Landing screen**
+
+- [ ] Copy matches exactly: `PHANTOM`, `MAKE THE IMPOSSIBLE APPEAR.`,
+      `ENTER CAMERA`, and a small "Processing happens locally on this
+      device." caption.
+- [ ] On a browser/device that's missing WebGL or camera support, ENTER
+      CAMERA is visibly disabled with an inline explanation — not just a
+      dead click.
+- [ ] HOW IT WORKS opens an overlay explaining the app in one paragraph
+      that says every effect is a visual illusion, not physically real;
+      Close (and Escape) return you to the landing screen.
+
+**Camera screen layout**
+
+- [ ] The top bar shows only the PHANTOM wordmark, a back button, and a
+      small status pill — nothing else clutters it.
+- [ ] The status pill changes as you'd expect: "SEARCHING" before your
+      body is found, "LIVE" once tracked, "NO BODY" if you step fully out
+      of frame and stay out past the brief recovery grace period.
+- [ ] The effect rail (SHADOW/CLONE/GHOST/REVERSE/DELAY) sits low on the
+      screen as a slim, translucent row — it should never feel like it's
+      covering a meaningful chunk of your view of yourself.
+- [ ] DELAY is visibly present but inert (dimmed, "SOON" badge) — tapping
+      it does nothing, and it never pretends to be a working effect.
+- [ ] The bottom bar has exactly three controls: camera-switch (only
+      visible on a device with more than one camera), the round RECORD
+      button, and a settings button.
+
+**Settings drawer**
+
+- [ ] Tapping the settings button slides up a drawer with collapsible
+      sections (Display, Shadow, Clone, Ghost, Reverse) — tapping a
+      section header expands/collapses it.
+- [ ] Every effect's existing controls (Clone's count/mode/reset, Ghost's
+      opacity/delay/glow/trail, Reverse's mode, Shadow's sensitivity) work
+      exactly as before, just relocated here.
+- [ ] The "Display" section's live stats (FPS, confidence, etc.) update
+      continuously, even while the section is collapsed and then
+      re-expanded — they were never frozen while out of view.
+- [ ] Closing the drawer (its own close button, tapping outside it, or
+      pressing Escape on a keyboard) all work and return you to the live
+      camera view.
+- [ ] The "Processing happens locally on this device." caption appears at
+      the bottom of the drawer.
+
+**Camera switch**
+
+- [ ] On a device with a front and back camera, the switch button is
+      visible and swaps between them, correctly re-mirroring the view
+      (front camera mirrored, back camera not) and keeping the 3D overlay
+      aligned after the switch.
+- [ ] On a device with only one camera, the button doesn't appear at all.
+
+**Keyboard accessibility (desktop browser)**
+
+- [ ] Starting from the address bar, Tab moves through every control on
+      the camera screen in a sensible order (back, effect chips, camera
+      controls) with a clearly visible focus ring on each.
+- [ ] Every button and slider is operable with Enter/Space/arrow keys —
+      you should never need a mouse to use any control in the app.
+- [ ] Opening the settings drawer or the "How it works" panel with a
+      keyboard moves focus into it; Escape closes either and returns
+      focus to the control that opened it.
+
+**Recording/error messaging**
+
+- [ ] A recording failure (e.g. tapping RECORD before the camera is fully
+      ready) shows a small inline message near the bottom of the screen
+      that disappears on its own after a few seconds — never a browser
+      `alert()` popup.
+- [ ] Camera permission, camera-not-found, and WebGL-unavailable states
+      still show their existing full-screen messages (these are more
+      serious, session-blocking failures, unlike the transient toast
+      above) with a clear retry/back action.
+
+**Touch targets and safe areas**
+
+- [ ] Every tappable control is comfortably large enough to hit reliably
+      with a thumb, including on a small phone screen.
+- [ ] On a phone with a notch or rounded corners (or by checking browser
+      dev tools' device toolbar with a safe-area-aware device preset), no
+      control is cut off or obscured by the notch, home indicator, or
+      screen corners in either portrait or landscape.
 
 ## Mobile-specific checks
 

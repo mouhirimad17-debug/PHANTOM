@@ -639,3 +639,142 @@ backed encoding through `MediaRecorder`, never a JS/WASM software encoder.
 - **Default frame rate**: `captureStream(30)` — a reasonable default for a
   short clip; not currently exposed as a setting (no requirement asked for
   one).
+
+## UI / design system (`ui/`)
+
+A visual and structural pass over `index.html`/`styles.css`/`CameraScreen.ts`/
+`LandingScreen.ts` — presentation only. Nothing here touches `App.ts`'s
+orchestration logic, any effect, `RecordingManager`, or the tracking/
+rendering pipeline; `CameraScreenCallbacks`' existing methods keep their
+exact signatures (only one new callback, `onCameraSwitch`, was added — see
+below), so every effect/recording control still calls the same App.ts
+methods it always did, just from a reorganized DOM.
+
+**Layout**: the camera screen is now three fixed regions instead of
+scattered per-effect panels at ad hoc absolute offsets:
+
+- `<header class="hud-top">` — back button, the `PHANTOM` wordmark, and a
+  live status pill (see below). Exactly the two things asked for (brand +
+  status), plus the back control the app still needs to navigate.
+- `<nav class="effect-rail">` — one persistent row of toggle chips (SHADOW/
+  CLONE/GHOST/REVERSE, plus a genuinely `disabled` DELAY chip — see below),
+  horizontally scrollable so it never needs to wrap or shrink chips below
+  their touch-target size on a narrow phone.
+- `<footer class="hud-bottom">` — camera-switch, RECORD, and settings,
+  three fixed icon-sized controls plus one large record button, matching
+  the requested bottom-bar contents exactly.
+
+Every one of these is a slim, translucent (`backdrop-filter: blur()`) bar
+rather than an opaque block, and the effect-specific parameter controls
+(Clone's count/mode, Ghost's sliders, Reverse's mode, Shadow's sensitivity)
+that used to live in three separate always-visible floating panels are now
+inside one on-demand settings drawer (below) — so nothing sits permanently
+on top of the camera feed except two thin bars and a chip row, directly
+serving "do not cover too much of the camera feed."
+
+**Settings drawer**: a bottom sheet (`#settings-panel`), opened by the
+gear-ish control in the bottom bar, holding a `<details>`/`<summary>` per
+section (Display, Shadow, Clone, Ghost, Reverse) — a deliberate semantic-
+HTML choice: `<details>` is a native, keyboard-operable disclosure widget,
+so each section expands/collapses with zero JavaScript and is reachable by
+Tab/Enter without any custom ARIA `expanded` bookkeeping. The drawer itself
+still needs a little JS for its own open/close lifecycle (not something
+`<details>` provides): opening it moves focus to its close button and
+starts listening for `Escape`; closing it (via the close button, the
+scrim, or `Escape`) removes that listener and returns focus to the gear
+button that opened it — a minimal, hand-rolled modal-focus treatment
+(match, not a full focus trap) appropriate for a panel with only a handful
+of controls. The `<video>`/`<canvas>` behind it are unaffected — this is
+the same "on-demand, not permanent" screen real estate principle as the
+effect rail.
+
+**Status indicator (the first-class "tracking lost" state)**: previously,
+tracking state was only visible inside the opt-in DEBUG panel. It's now
+also a small top-bar pill, always present, derived from the exact same
+`DebugStats` object `App.ts` was already computing and passing to
+`updateDebugStats()` every frame — no new data plumbing was needed.
+`CameraScreen` maps `TrackingState` to one of four short labels/tones:
+`TRACKING` → "LIVE" (accent dot), `LOST` → "NO BODY" (red dot),
+`INITIALIZING`/`RECOVERING` → "SEARCHING" (pulsing amber dot), and the
+detection-failure case → "ERROR" (red dot). The detailed stats rows
+(FPS, confidence, the mirroring diagnostic, etc.) still exist, now inside
+the settings drawer's "Display" section, and are updated unconditionally
+on every call — the old `if (!this.debugVisible) return` early-return was
+removed, since a `<details>` section costs nothing to keep current even
+while collapsed (a handful of `textContent` writes at a few dozen Hz is
+free), which also simplified `CameraScreen` by deleting a manual
+visibility-gate boolean.
+
+**Camera switch — wiring an existing capability, not a new one**:
+`CameraController.switchFacing()` and `.getStatus().canSwitchFacing`
+already existed (built for a future "no UI trigger yet" gap noted in
+TODO.md) but had no UI. `App.switchCamera()` calls the former and re-runs
+the same mirroring/aspect recomputation `enterCamera()` already does after
+a facing change; the button itself stays hidden until `enterCamera()`
+confirms (via `canSwitchFacing`) that the device actually has more than
+one camera, and is disabled for the duration of an in-flight switch to
+prevent overlapping calls. No new camera/tracking logic was written — this
+is exactly "complete a documented UI gap with an already-built capability,"
+not new architecture.
+
+**DELAY — listed, not faked**: the effect rail includes a fifth chip for
+the not-yet-implemented Delay effect, matching the requested effect list,
+but it's a real, natively `disabled` `<button>` with a "SOON" badge and an
+accessible label saying so — never a control that looks interactive but
+silently does nothing. `TODO.md` already tracks `DelayEffect` as future
+work; this UI change doesn't build it, only acknowledges it honestly.
+
+**Unsupported-device state, made proactive**: `isWebGLAvailable()` and a
+`navigator.mediaDevices?.getUserMedia` check (both already-cheap,
+side-effect-free capability checks) now run once at `App` construction,
+before the user ever taps ENTER CAMERA. If either is missing,
+`LandingScreen.setUnsupported()` disables the button and shows an inline
+note in place of it — turning what used to be "tap the button, wait, then
+see a full-screen error" into "the button already tells you it won't
+work." The existing overlay-based error path (`CameraScreen.showError()`,
+covering camera permission/not-found/in-use, insecure context, and a
+mid-session WebGL failure) is unchanged and still the fallback for
+anything not caught by the proactive check.
+
+**Non-fatal messaging (`CameraScreen.showNote()`)**: a single, generic,
+auto-dismissing inline toast (never a native `alert()`/`confirm()`)
+used for anything that shouldn't interrupt the rest of the camera
+experience the way a fatal camera/vision error does — a recording
+pre-flight failure, an async recording error, or a failed camera switch.
+This replaces what was a recording-only `showRecordingError()` method;
+generalizing it was a small, low-risk rename since it had exactly one
+concern (show text, auto-hide) that a second caller now shares.
+
+**Accessibility**:
+- A single `:focus-visible` rule (accent-colored outline) is defined once,
+  globally, rather than per component — every button, slider, and link in
+  the app gets a visible keyboard-focus indicator that also matches the
+  design language, since the dark glass surfaces throughout this UI would
+  otherwise make browsers' default focus rings hard to see or invisible.
+  It only ever shows for keyboard/programmatic focus, never mouse/touch
+  activation (that's what `:focus-visible` is for).
+- Every interactive control is a real `<button>` or `<input>` (never a
+  `<div onclick>`), so Tab order, Enter/Space activation, and disabled
+  semantics all come from the browser for free — confirmed by scripted
+  Tab-sequence traversal (see TESTING.md).
+- Live/transient regions (`status-indicator`, `record-indicator`, the
+  loading overlay, error overlays, the toast note) carry `role="status"`/
+  `role="alert"`/`aria-live="polite"` as appropriate, so assistive tech
+  hears state changes without needing to poll the screen.
+- Icon-only buttons (back, camera-switch, settings, settings-close) all
+  have an explicit `aria-label`; their inline SVGs are `aria-hidden`.
+- Touch targets: every tappable control in the redesigned bottom bar,
+  effect rail, and settings drawer is at least 44px in its smallest
+  dimension (WCAG's minimum), confirmed via measured bounding boxes in the
+  scripted browser check, not just eyeballed in CSS.
+- Safe-area insets (`env(safe-area-inset-*)`) are applied to the top
+  header, bottom bar, effect rail, settings drawer, and every full-screen
+  overlay — not just top/bottom as before, but left/right too, since a
+  landscape-oriented notched phone needs those as well.
+
+**Copy**: the landing tagline and button text match the requested copy
+exactly ("MAKE THE IMPOSSIBLE APPEAR." / "ENTER CAMERA"); the "How it
+works" panel explicitly states every effect is a visual illusion, not
+anything physically real; a small "Processing happens locally on this
+device." caption appears on both the landing screen and inside the
+settings drawer.

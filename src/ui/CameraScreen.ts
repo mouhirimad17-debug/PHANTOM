@@ -7,6 +7,7 @@ import type { ReversePreset } from '../effects/ReverseEffect';
 export interface CameraScreenCallbacks {
   onBack: () => void;
   onRetry: () => void;
+  onCameraSwitch: () => void;
   onDebugToggle: (visible: boolean) => void;
   onIndependentShadowToggle: (active: boolean) => void;
   /** Fires as the advanced-panel sensitivity slider is dragged; maps to the effect's followStrength. */
@@ -45,6 +46,22 @@ export interface DebugStats {
   mirrorDiagnostics: { rawX: number; renderX: number; cameraMirrored: boolean } | null;
 }
 
+/** A single effect's top-level enable/disable chip in the bottom effect rail. */
+interface EffectChip {
+  button: HTMLButtonElement;
+  onToggle: (active: boolean) => void;
+}
+
+const DEFAULT_CLONE_COUNT = '3';
+const DEFAULT_CLONE_MODE = 'SPREAD';
+const DEFAULT_REVERSE_PRESET = 'MIRROR';
+const DEFAULT_REVERSE_LABEL = 'Mirror';
+const DEFAULT_GHOST_OPACITY = '0.4';
+const DEFAULT_GHOST_DELAY = '90';
+const DEFAULT_GHOST_GLOW = '1';
+const DEFAULT_SHADOW_SENSITIVITY = '6';
+const TOAST_DURATION_MS = 4000;
+
 export class CameraScreen {
   readonly videoElement = requireElement<HTMLVideoElement>('camera-video');
   readonly canvasElement = requireElement<HTMLCanvasElement>('scene-canvas');
@@ -53,7 +70,11 @@ export class CameraScreen {
   private readonly loadingOverlay = requireElement<HTMLElement>('camera-loading');
   private readonly errorOverlay = requireElement<HTMLElement>('camera-error');
   private readonly errorMessageEl = requireElement<HTMLElement>('camera-error-message');
-  private readonly debugPanel = requireElement<HTMLElement>('debug-panel');
+
+  private readonly statusDotEl = requireElement<HTMLElement>('status-dot');
+  private readonly statusTextEl = requireElement<HTMLElement>('status-text');
+
+  private readonly skeletonToggleBtn = requireElement<HTMLButtonElement>('skeleton-toggle-btn');
   private readonly fpsValueEl = requireElement<HTMLElement>('fps-value');
   private readonly visionStatusEl = requireElement<HTMLElement>('vision-status-value');
   private readonly trackingStateEl = requireElement<HTMLElement>('tracking-state-value');
@@ -65,75 +86,94 @@ export class CameraScreen {
   private readonly renderXEl = requireElement<HTMLElement>('render-x-value');
   private readonly mirroredEl = requireElement<HTMLElement>('mirrored-value');
 
-  private readonly independentToggleBtn = requireElement<HTMLButtonElement>('independent-toggle-btn');
+  private readonly shadowToggleBtn = requireElement<HTMLButtonElement>('shadow-toggle-btn');
+  private readonly sensitivitySlider = requireElement<HTMLInputElement>('shadow-sensitivity-slider');
+
   private readonly cloneToggleBtn = requireElement<HTMLButtonElement>('clone-toggle-btn');
-  private readonly clonePanel = requireElement<HTMLElement>('clone-panel');
-  private readonly cloneCountBtns = Array.from(
-    document.querySelectorAll<HTMLButtonElement>('[data-clone-count]'),
-  );
+  private readonly cloneCountBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-clone-count]'));
   private readonly cloneModeBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-clone-mode]'));
 
   private readonly ghostToggleBtn = requireElement<HTMLButtonElement>('ghost-toggle-btn');
-  private readonly ghostPanel = requireElement<HTMLElement>('ghost-panel');
+  private readonly ghostOpacitySlider = requireElement<HTMLInputElement>('ghost-opacity-slider');
+  private readonly ghostDelaySlider = requireElement<HTMLInputElement>('ghost-delay-slider');
+  private readonly ghostGlowSlider = requireElement<HTMLInputElement>('ghost-glow-slider');
   private readonly ghostTrailToggleBtn = requireElement<HTMLButtonElement>('ghost-trail-toggle-btn');
 
   private readonly reverseToggleBtn = requireElement<HTMLButtonElement>('reverse-toggle-btn');
-  private readonly reversePanel = requireElement<HTMLElement>('reverse-panel');
   private readonly reversePresetBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-reverse-preset]'));
   private readonly reversePreviewLabelEl = requireElement<HTMLElement>('reverse-preview-label-value');
 
-  private readonly recordControls = requireElement<HTMLElement>('record-controls');
+  private readonly cameraSwitchBtn = requireElement<HTMLButtonElement>('camera-switch-btn');
+
+  private readonly settingsToggleBtn = requireElement<HTMLButtonElement>('settings-toggle-btn');
+  private readonly settingsCloseBtn = requireElement<HTMLButtonElement>('settings-close-btn');
+  private readonly settingsPanel = requireElement<HTMLElement>('settings-panel');
+  private readonly settingsScrim = requireElement<HTMLElement>('settings-scrim');
+
+  private readonly toastNote = requireElement<HTMLElement>('toast-note');
+  private readonly recordUnsupportedNote = requireElement<HTMLElement>('record-unsupported-note');
+
+  private readonly recordControls: HTMLElement;
   private readonly recordToggleBtn = requireElement<HTMLButtonElement>('record-toggle-btn');
   private readonly recordIndicator = requireElement<HTMLElement>('record-indicator');
-  private readonly recordErrorNote = requireElement<HTMLElement>('record-error-note');
-  private readonly recordUnsupportedNote = requireElement<HTMLElement>('record-unsupported-note');
   private readonly recordingPreviewOverlay = requireElement<HTMLElement>('recording-preview');
   private readonly recordingPreviewVideo = requireElement<HTMLVideoElement>('recording-preview-video');
 
-  private debugVisible = false;
-  private independentActive = false;
-  private cloneActive = false;
-  private ghostActive = false;
-  private ghostTrailActive = true;
-  private reverseActive = false;
+  private readonly ghostTrailBtnLabel = { on: 'TRAIL: ON', off: 'TRAIL: OFF' } as const;
+  private readonly skeletonBtnLabel = { on: 'SKELETON OVERLAY: ON', off: 'SKELETON OVERLAY: OFF' } as const;
+
+  private readonly effectChips: EffectChip[];
+
+  private settingsOpen = false;
   private recordingState: RecordingState = 'idle';
-  private recordErrorTimeout: number | null = null;
+  private toastTimeout: number | null = null;
 
   constructor(callbacks: CameraScreenCallbacks) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
-    const debugToggleBtn = requireElement<HTMLButtonElement>('debug-toggle-btn');
     const retryBtn = requireElement<HTMLButtonElement>('camera-error-retry-btn');
     const errorBackBtn = requireElement<HTMLButtonElement>('camera-error-back-btn');
-    const sensitivitySlider = requireElement<HTMLInputElement>('shadow-sensitivity-slider');
     const cloneResetAllBtn = requireElement<HTMLButtonElement>('clone-reset-all-btn');
-    const ghostOpacitySlider = requireElement<HTMLInputElement>('ghost-opacity-slider');
-    const ghostDelaySlider = requireElement<HTMLInputElement>('ghost-delay-slider');
-    const ghostGlowSlider = requireElement<HTMLInputElement>('ghost-glow-slider');
     const recordingSaveBtn = requireElement<HTMLButtonElement>('recording-save-btn');
     const recordingRetakeBtn = requireElement<HTMLButtonElement>('recording-retake-btn');
+    // The bottom control bar containing RECORD is hidden while a finished
+    // take is being previewed — its parent <footer> is what actually holds
+    // layout, so grab it via the button already required above.
+    this.recordControls = this.recordToggleBtn.parentElement as HTMLElement;
 
     backBtn.addEventListener('click', () => callbacks.onBack());
     errorBackBtn.addEventListener('click', () => callbacks.onBack());
     retryBtn.addEventListener('click', () => callbacks.onRetry());
-    debugToggleBtn.addEventListener('click', () => {
-      this.debugVisible = !this.debugVisible;
-      this.debugPanel.classList.toggle('hidden', !this.debugVisible);
-      callbacks.onDebugToggle(this.debugVisible);
+    this.cameraSwitchBtn.addEventListener('click', () => callbacks.onCameraSwitch());
+
+    this.skeletonToggleBtn.addEventListener('click', () => {
+      const active = this.skeletonToggleBtn.getAttribute('aria-pressed') !== 'true';
+      this.setSkeletonActive(active);
+      callbacks.onDebugToggle(active);
     });
-    this.independentToggleBtn.addEventListener('click', () => {
-      this.independentActive = !this.independentActive;
-      this.independentToggleBtn.classList.toggle('active', this.independentActive);
-      this.independentToggleBtn.setAttribute('aria-pressed', String(this.independentActive));
-      callbacks.onIndependentShadowToggle(this.independentActive);
-    });
-    sensitivitySlider.addEventListener('input', () => {
-      callbacks.onIndependentShadowSensitivity(Number(sensitivitySlider.value));
+    this.sensitivitySlider.addEventListener('input', () => {
+      callbacks.onIndependentShadowSensitivity(Number(this.sensitivitySlider.value));
     });
 
-    this.cloneToggleBtn.addEventListener('click', () => {
-      this.setCloneActive(!this.cloneActive);
-      callbacks.onCloneToggle(this.cloneActive);
-    });
+    this.effectChips = [
+      { button: this.shadowToggleBtn, onToggle: callbacks.onIndependentShadowToggle },
+      { button: this.cloneToggleBtn, onToggle: callbacks.onCloneToggle },
+      { button: this.ghostToggleBtn, onToggle: callbacks.onGhostToggle },
+      {
+        button: this.reverseToggleBtn,
+        onToggle: (active) => {
+          callbacks.onReverseToggle(active);
+          if (!active) this.setReversePreviewLabel(DEFAULT_REVERSE_LABEL);
+        },
+      },
+    ];
+    for (const chip of this.effectChips) {
+      chip.button.addEventListener('click', () => {
+        const active = chip.button.getAttribute('aria-pressed') !== 'true';
+        chip.button.setAttribute('aria-pressed', String(active));
+        chip.onToggle(active);
+      });
+    }
+
     for (const btn of this.cloneCountBtns) {
       btn.addEventListener('click', () => {
         this.setSegmentedPressed(this.cloneCountBtns, btn);
@@ -149,39 +189,45 @@ export class CameraScreen {
     cloneResetAllBtn.addEventListener('click', () => {
       callbacks.onCloneResetAll();
       // Reflect CloneEffect.reset()'s restored defaults (disabled, count=3, mode=SPREAD) in the UI.
-      this.setCloneActive(false);
-      this.setSegmentedPressed(this.cloneCountBtns, this.cloneCountBtns.find((b) => b.dataset['cloneCount'] === '3'));
-      this.setSegmentedPressed(this.cloneModeBtns, this.cloneModeBtns.find((b) => b.dataset['cloneMode'] === 'SPREAD'));
+      this.setChipActive(this.cloneToggleBtn, false);
+      this.setSegmentedPressed(
+        this.cloneCountBtns,
+        this.cloneCountBtns.find((b) => b.dataset['cloneCount'] === DEFAULT_CLONE_COUNT),
+      );
+      this.setSegmentedPressed(
+        this.cloneModeBtns,
+        this.cloneModeBtns.find((b) => b.dataset['cloneMode'] === DEFAULT_CLONE_MODE),
+      );
     });
 
-    this.ghostToggleBtn.addEventListener('click', () => {
-      this.setGhostActive(!this.ghostActive);
-      callbacks.onGhostToggle(this.ghostActive);
+    this.ghostOpacitySlider.addEventListener('input', () => {
+      callbacks.onGhostOpacityChange(Number(this.ghostOpacitySlider.value));
     });
-    ghostOpacitySlider.addEventListener('input', () => {
-      callbacks.onGhostOpacityChange(Number(ghostOpacitySlider.value));
+    this.ghostDelaySlider.addEventListener('input', () => {
+      callbacks.onGhostDelayChange(Number(this.ghostDelaySlider.value));
     });
-    ghostDelaySlider.addEventListener('input', () => {
-      callbacks.onGhostDelayChange(Number(ghostDelaySlider.value));
-    });
-    ghostGlowSlider.addEventListener('input', () => {
-      callbacks.onGhostGlowChange(Number(ghostGlowSlider.value));
+    this.ghostGlowSlider.addEventListener('input', () => {
+      callbacks.onGhostGlowChange(Number(this.ghostGlowSlider.value));
     });
     this.ghostTrailToggleBtn.addEventListener('click', () => {
-      this.setGhostTrailActive(!this.ghostTrailActive);
-      callbacks.onGhostTrailToggle(this.ghostTrailActive);
+      const active = this.ghostTrailToggleBtn.getAttribute('aria-pressed') !== 'true';
+      this.setGhostTrailActive(active);
+      callbacks.onGhostTrailToggle(active);
     });
 
-    this.reverseToggleBtn.addEventListener('click', () => {
-      this.setReverseActive(!this.reverseActive);
-      callbacks.onReverseToggle(this.reverseActive);
-    });
     for (const btn of this.reversePresetBtns) {
       btn.addEventListener('click', () => {
         this.setSegmentedPressed(this.reversePresetBtns, btn);
         callbacks.onReversePresetChange(btn.dataset['reversePreset'] as ReversePreset);
       });
     }
+
+    this.settingsToggleBtn.addEventListener('click', () => {
+      if (this.settingsOpen) this.closeSettings();
+      else this.openSettings();
+    });
+    this.settingsCloseBtn.addEventListener('click', () => this.closeSettings());
+    this.settingsScrim.addEventListener('click', () => this.closeSettings());
 
     this.recordToggleBtn.addEventListener('click', () => {
       if (this.recordingState === 'recording') callbacks.onRecordStop();
@@ -191,11 +237,10 @@ export class CameraScreen {
     recordingRetakeBtn.addEventListener('click', () => callbacks.onRecordRetake());
   }
 
-  private setCloneActive(active: boolean): void {
-    this.cloneActive = active;
-    this.cloneToggleBtn.classList.toggle('active', active);
-    this.cloneToggleBtn.setAttribute('aria-pressed', String(active));
-    this.clonePanel.classList.toggle('hidden', !active);
+  // ---------- Effect chips / segmented controls ----------
+
+  private setChipActive(button: HTMLButtonElement, active: boolean): void {
+    button.setAttribute('aria-pressed', String(active));
   }
 
   private setSegmentedPressed(group: HTMLButtonElement[], selected: HTMLButtonElement | undefined): void {
@@ -204,30 +249,60 @@ export class CameraScreen {
     }
   }
 
-  private setGhostActive(active: boolean): void {
-    this.ghostActive = active;
-    this.ghostToggleBtn.classList.toggle('active', active);
-    this.ghostToggleBtn.setAttribute('aria-pressed', String(active));
-    this.ghostPanel.classList.toggle('hidden', !active);
+  private setSkeletonActive(active: boolean): void {
+    this.skeletonToggleBtn.setAttribute('aria-pressed', String(active));
+    this.skeletonToggleBtn.textContent = active ? this.skeletonBtnLabel.on : this.skeletonBtnLabel.off;
   }
 
   private setGhostTrailActive(active: boolean): void {
-    this.ghostTrailActive = active;
     this.ghostTrailToggleBtn.setAttribute('aria-pressed', String(active));
-    this.ghostTrailToggleBtn.textContent = active ? 'TRAIL: ON' : 'TRAIL: OFF';
-  }
-
-  private setReverseActive(active: boolean): void {
-    this.reverseActive = active;
-    this.reverseToggleBtn.classList.toggle('active', active);
-    this.reverseToggleBtn.setAttribute('aria-pressed', String(active));
-    this.reversePanel.classList.toggle('hidden', !active);
+    this.ghostTrailToggleBtn.textContent = active ? this.ghostTrailBtnLabel.on : this.ghostTrailBtnLabel.off;
   }
 
   /** Reflects ReverseEffect's currently selected preset in the panel's preview label — see App.ts's onReverseToggle/onReversePresetChange. */
   setReversePreviewLabel(label: string): void {
     this.reversePreviewLabelEl.textContent = label;
   }
+
+  // ---------- Settings drawer ----------
+
+  private openSettings(): void {
+    this.settingsOpen = true;
+    this.settingsPanel.classList.remove('hidden');
+    this.settingsScrim.classList.remove('hidden');
+    this.settingsToggleBtn.setAttribute('aria-pressed', 'true');
+    this.settingsToggleBtn.setAttribute('aria-expanded', 'true');
+    this.settingsCloseBtn.focus();
+    document.addEventListener('keydown', this.handleSettingsKeydown);
+  }
+
+  private closeSettings(): void {
+    this.settingsOpen = false;
+    this.settingsPanel.classList.add('hidden');
+    this.settingsScrim.classList.add('hidden');
+    this.settingsToggleBtn.setAttribute('aria-pressed', 'false');
+    this.settingsToggleBtn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('keydown', this.handleSettingsKeydown);
+    this.settingsToggleBtn.focus();
+  }
+
+  private readonly handleSettingsKeydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') this.closeSettings();
+  };
+
+  // ---------- Camera switch ----------
+
+  /** Shows/hides the camera-switch control — called once the camera is active and CameraController reports whether more than one facing mode exists. */
+  setCameraSwitchAvailable(available: boolean): void {
+    this.cameraSwitchBtn.classList.toggle('hidden', !available);
+  }
+
+  /** Disables the camera-switch control while a switch is in flight, to prevent overlapping switches. */
+  setCameraSwitchBusy(busy: boolean): void {
+    this.cameraSwitchBtn.disabled = busy;
+  }
+
+  // ---------- Recording ----------
 
   /** Hides the RECORD button entirely and shows a short explanatory note instead — called once, at startup, from RecordingManager.isSupported(). */
   setRecordingSupported(supported: boolean): void {
@@ -258,15 +333,17 @@ export class CameraScreen {
     }
   }
 
-  /** Shows a short-lived inline error note near the record button (auto-hides — recording failures aren't fatal to the rest of the camera experience, unlike camera/vision errors). */
-  showRecordingError(message: string): void {
-    this.recordErrorNote.textContent = message;
-    this.recordErrorNote.classList.remove('hidden');
-    if (this.recordErrorTimeout !== null) window.clearTimeout(this.recordErrorTimeout);
-    this.recordErrorTimeout = window.setTimeout(() => {
-      this.recordErrorNote.classList.add('hidden');
-      this.recordErrorTimeout = null;
-    }, 4000);
+  // ---------- Transient inline notes ----------
+
+  /** Shows a short-lived inline message (auto-hides) for a non-fatal failure — recording errors, a failed camera switch — none of which should block the rest of the camera experience the way a fatal camera/vision error does. Never a native alert(). */
+  showNote(message: string): void {
+    this.toastNote.textContent = message;
+    this.toastNote.classList.remove('hidden');
+    if (this.toastTimeout !== null) window.clearTimeout(this.toastTimeout);
+    this.toastTimeout = window.setTimeout(() => {
+      this.toastNote.classList.add('hidden');
+      this.toastTimeout = null;
+    }, TOAST_DURATION_MS);
   }
 
   getContainer(): HTMLElement {
@@ -281,24 +358,45 @@ export class CameraScreen {
     this.root.classList.add('hidden');
     this.hideLoading();
     this.hideError();
-    // Keep the toggle's visual state in sync with App.exitCamera() resetting
-    // the underlying effect — otherwise re-entering the camera would show
-    // the button as "active" while the effect actually starts disabled.
-    this.independentActive = false;
-    this.independentToggleBtn.classList.remove('active');
-    this.independentToggleBtn.setAttribute('aria-pressed', 'false');
-    this.setCloneActive(false);
-    this.setGhostActive(false);
+    // Keep every control's visual state in sync with App.exitCamera()
+    // resetting the underlying effects — otherwise re-entering the camera
+    // would show a control as "active" while its effect actually starts
+    // disabled, or a slider at a stale position after its effect reset.
+    for (const chip of this.effectChips) this.setChipActive(chip.button, false);
+    this.setSkeletonActive(false);
+    this.sensitivitySlider.value = DEFAULT_SHADOW_SENSITIVITY;
+    this.setSegmentedPressed(
+      this.cloneCountBtns,
+      this.cloneCountBtns.find((b) => b.dataset['cloneCount'] === DEFAULT_CLONE_COUNT),
+    );
+    this.setSegmentedPressed(
+      this.cloneModeBtns,
+      this.cloneModeBtns.find((b) => b.dataset['cloneMode'] === DEFAULT_CLONE_MODE),
+    );
+    this.ghostOpacitySlider.value = DEFAULT_GHOST_OPACITY;
+    this.ghostDelaySlider.value = DEFAULT_GHOST_DELAY;
+    this.ghostGlowSlider.value = DEFAULT_GHOST_GLOW;
     this.setGhostTrailActive(true); // matches DEFAULT_GHOST_PARAMS.trailEnabled
-    this.setReverseActive(false);
-    this.setSegmentedPressed(this.reversePresetBtns, this.reversePresetBtns.find((b) => b.dataset['reversePreset'] === 'MIRROR'));
-    this.setReversePreviewLabel('Mirror'); // matches DEFAULT_REVERSE_PARAMS.preset
+    this.setSegmentedPressed(
+      this.reversePresetBtns,
+      this.reversePresetBtns.find((b) => b.dataset['reversePreset'] === DEFAULT_REVERSE_PRESET),
+    );
+    this.setReversePreviewLabel(DEFAULT_REVERSE_LABEL);
     this.updateRecordingState('idle', null);
-    if (this.recordErrorTimeout !== null) {
-      window.clearTimeout(this.recordErrorTimeout);
-      this.recordErrorTimeout = null;
+    this.setCameraSwitchAvailable(false);
+    if (this.toastTimeout !== null) {
+      window.clearTimeout(this.toastTimeout);
+      this.toastTimeout = null;
     }
-    this.recordErrorNote.classList.add('hidden');
+    this.toastNote.classList.add('hidden');
+    if (this.settingsOpen) {
+      this.settingsOpen = false;
+      this.settingsPanel.classList.add('hidden');
+      this.settingsScrim.classList.add('hidden');
+      this.settingsToggleBtn.setAttribute('aria-pressed', 'false');
+      this.settingsToggleBtn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('keydown', this.handleSettingsKeydown);
+    }
   }
 
   showLoading(): void {
@@ -332,7 +430,8 @@ export class CameraScreen {
   }
 
   updateDebugStats(stats: DebugStats): void {
-    if (!this.debugVisible) return;
+    this.updateStatusIndicator(stats);
+
     this.fpsValueEl.textContent = stats.fps.toFixed(0);
     this.visionStatusEl.textContent = stats.visionStatus;
     this.trackingStateEl.textContent = stats.trackingState;
@@ -345,5 +444,35 @@ export class CameraScreen {
     this.rawXEl.textContent = diag ? diag.rawX.toFixed(3) : '-';
     this.renderXEl.textContent = diag ? diag.renderX.toFixed(3) : '-';
     this.mirroredEl.textContent = diag ? String(diag.cameraMirrored) : '-';
+  }
+
+  /**
+   * Drives the always-visible top-bar status pill from the same stats
+   * already computed for the (optional, opt-in) detailed stats panel —
+   * this is the first-class "tracking lost" signal a normal user sees,
+   * not just a DEBUG-only readout.
+   */
+  private updateStatusIndicator(stats: DebugStats): void {
+    let label: string;
+    let tone: 'live' | 'searching' | 'lost' | 'error';
+    switch (stats.trackingState) {
+      case 'ERROR':
+        label = 'ERROR';
+        tone = 'error';
+        break;
+      case 'TRACKING':
+        label = 'LIVE';
+        tone = 'live';
+        break;
+      case 'LOST':
+        label = 'NO BODY';
+        tone = 'lost';
+        break;
+      default: // INITIALIZING or RECOVERING
+        label = 'SEARCHING';
+        tone = 'searching';
+    }
+    this.statusTextEl.textContent = label;
+    this.statusDotEl.dataset['tone'] = tone;
   }
 }

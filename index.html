@@ -9,129 +9,294 @@
   </head>
   <body>
     <main id="app">
-      <section id="landing-screen" class="screen">
+      <section id="landing-screen" class="screen landing-screen">
+        <div class="landing-glow" aria-hidden="true"></div>
         <div class="landing-content">
           <h1 class="brand">PHANTOM</h1>
-          <p class="tagline">Make the impossible appear on camera.</p>
-          <button id="enter-camera-btn" class="btn btn-primary" type="button">ENTER CAMERA</button>
-          <button id="how-it-works-btn" class="btn btn-secondary" type="button">HOW IT WORKS</button>
+          <p class="tagline">MAKE THE IMPOSSIBLE APPEAR.</p>
+          <div class="landing-actions">
+            <button id="enter-camera-btn" class="btn btn-primary" type="button">ENTER CAMERA</button>
+            <button id="how-it-works-btn" class="btn btn-ghost" type="button">HOW IT WORKS</button>
+          </div>
+          <p id="landing-unsupported-note" class="inline-note hidden" role="alert"></p>
+          <p class="privacy-note">Processing happens locally on this device.</p>
         </div>
-        <div id="how-it-works-panel" class="info-panel hidden">
-          <h2>How it works</h2>
+        <div
+          id="how-it-works-panel"
+          class="info-panel hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="how-it-works-title"
+        >
+          <h2 id="how-it-works-title">How it works</h2>
           <p>
-            PHANTOM opens your camera and detects your body's pose entirely on your device — nothing is
-            ever uploaded. A virtual representation of your body is drawn into the live camera view and
-            tracks your movement in real time.
+            PHANTOM opens your camera and detects your body's pose entirely on your device — nothing
+            is ever uploaded. A virtual representation of your body is drawn into the live camera view
+            and tracks your movement in real time. Every effect is a visual illusion — nothing here is
+            physically real.
           </p>
           <button id="close-how-it-works-btn" class="btn btn-secondary" type="button">Close</button>
         </div>
       </section>
 
-      <section id="camera-screen" class="screen hidden">
+      <section id="camera-screen" class="screen camera-screen hidden">
         <video id="camera-video" playsinline muted></video>
         <canvas id="scene-canvas"></canvas>
+        <div class="camera-vignette" aria-hidden="true"></div>
 
-        <div id="camera-topbar">
-          <button id="back-btn" class="icon-btn" type="button" aria-label="Back to landing screen">&#8592;</button>
-          <div id="camera-topbar-right">
-            <button id="clone-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Clone effect" aria-pressed="false">CLONE</button>
-            <button id="independent-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Independent Shadow effect" aria-pressed="false">INDEPENDENT</button>
-            <button id="ghost-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Ghost effect" aria-pressed="false">GHOST</button>
-            <button id="reverse-toggle-btn" class="icon-btn" type="button" aria-label="Toggle Reverse effect" aria-pressed="false">REVERSE</button>
-            <button id="debug-toggle-btn" class="icon-btn" type="button" aria-label="Toggle debug info">DEBUG</button>
-          </div>
-        </div>
-
-        <div id="clone-panel" class="panel clone-panel hidden">
-          <div class="clone-panel-group">
-            <span class="clone-panel-label">Clones</span>
-            <div class="segmented-control" role="group" aria-label="Clone count">
-              <button type="button" class="segmented-btn" data-clone-count="2">2</button>
-              <button type="button" class="segmented-btn" data-clone-count="3" aria-pressed="true">3</button>
-              <button type="button" class="segmented-btn" data-clone-count="5">5</button>
-            </div>
-          </div>
-          <div class="clone-panel-group">
-            <span class="clone-panel-label">Mode</span>
-            <div class="segmented-control" role="group" aria-label="Clone mode">
-              <button type="button" class="segmented-btn" data-clone-mode="SAME">SAME</button>
-              <button type="button" class="segmented-btn" data-clone-mode="DELAYED">DELAYED</button>
-              <button type="button" class="segmented-btn" data-clone-mode="SPREAD" aria-pressed="true">SPREAD</button>
-            </div>
-          </div>
-          <button id="clone-reset-all-btn" class="btn btn-secondary clone-reset-btn" type="button">RESET ALL</button>
-        </div>
-
-        <div id="ghost-panel" class="panel ghost-panel hidden">
-          <div class="ghost-panel-row">
-            <label for="ghost-opacity-slider">Opacity</label>
-            <input id="ghost-opacity-slider" type="range" min="0" max="1" step="0.05" value="0.4" aria-label="Ghost opacity" />
-          </div>
-          <div class="ghost-panel-row">
-            <label for="ghost-delay-slider">Delay</label>
-            <input id="ghost-delay-slider" type="range" min="0" max="600" step="10" value="90" aria-label="Ghost delay in milliseconds" />
-          </div>
-          <div class="ghost-panel-row">
-            <label for="ghost-glow-slider">Glow</label>
-            <input id="ghost-glow-slider" type="range" min="0" max="2" step="0.05" value="1" aria-label="Ghost glow strength" />
-          </div>
-          <button id="ghost-trail-toggle-btn" class="btn btn-secondary ghost-trail-btn" type="button" aria-pressed="true">
-            TRAIL: ON
+        <header class="hud-top">
+          <button id="back-btn" class="icon-btn" type="button" aria-label="Back to landing screen">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path
+                d="M15 5l-7 7 7 7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </button>
-        </div>
-
-        <div id="reverse-panel" class="panel reverse-panel hidden">
-          <div class="reverse-panel-group">
-            <span class="reverse-panel-label">Mode</span>
-            <div class="segmented-control" role="group" aria-label="Reverse preset">
-              <button type="button" class="segmented-btn" data-reverse-preset="MIRROR" aria-pressed="true">MIRROR</button>
-              <button type="button" class="segmented-btn" data-reverse-preset="REVERSE_HORIZONTAL">REVERSE H.</button>
-              <button type="button" class="segmented-btn" data-reverse-preset="DELAYED_MIRROR">DELAYED</button>
-            </div>
+          <p class="hud-brand">PHANTOM</p>
+          <div id="status-indicator" class="status-indicator" role="status" aria-live="polite">
+            <span id="status-dot" class="status-dot" data-tone="searching" aria-hidden="true"></span>
+            <span id="status-text">INITIALIZING</span>
           </div>
-          <div class="reverse-preview-label">Mode: <span id="reverse-preview-label-value">Mirror</span></div>
+        </header>
+
+        <div id="record-indicator" class="record-indicator hidden" role="status" aria-live="polite">
+          <span class="record-dot" aria-hidden="true"></span>REC
         </div>
 
-        <div id="debug-panel" class="panel hidden">
-          <div class="debug-row"><span>FPS</span><span id="fps-value">0</span></div>
-          <div class="debug-row"><span>Vision</span><span id="vision-status-value">-</span></div>
-          <div class="debug-row"><span>State</span><span id="tracking-state-value">-</span></div>
-          <div class="debug-row"><span>Confidence</span><span id="confidence-value">-</span></div>
-          <div class="debug-row"><span>Landmarks</span><span id="landmark-count-value">-</span></div>
-          <div class="debug-row"><span>Inference</span><span id="inference-time-value">-</span></div>
-          <div class="debug-row"><span>Effect</span><span id="current-effect-value">-</span></div>
-          <!-- Temporary mirroring diagnostic (right wrist). Debug-only, never shown outside this opt-in panel. -->
-          <div class="debug-row"><span>Raw X</span><span id="raw-x-value">-</span></div>
-          <div class="debug-row"><span>Render X</span><span id="render-x-value">-</span></div>
-          <div class="debug-row"><span>Mirrored</span><span id="mirrored-value">-</span></div>
-          <!-- Advanced: Independent Shadow sensitivity. Intentionally tucked inside
-               this already-hidden-by-default panel rather than surfaced in the
-               main UI. -->
-          <div class="debug-row debug-row-slider">
-            <label for="shadow-sensitivity-slider">Shadow Sensitivity</label>
-            <input
-              id="shadow-sensitivity-slider"
-              type="range"
-              min="0.5"
-              max="20"
-              step="0.5"
-              value="6"
-              aria-label="Independent Shadow sensitivity"
-            />
-          </div>
-        </div>
+        <nav class="effect-rail" aria-label="Effects">
+          <ul class="effect-rail-list">
+            <li>
+              <button type="button" id="shadow-toggle-btn" class="effect-chip" aria-pressed="false">SHADOW</button>
+            </li>
+            <li>
+              <button type="button" id="clone-toggle-btn" class="effect-chip" aria-pressed="false">CLONE</button>
+            </li>
+            <li>
+              <button type="button" id="ghost-toggle-btn" class="effect-chip" aria-pressed="false">GHOST</button>
+            </li>
+            <li>
+              <button type="button" id="reverse-toggle-btn" class="effect-chip" aria-pressed="false">REVERSE</button>
+            </li>
+            <li>
+              <button
+                type="button"
+                id="delay-toggle-btn"
+                class="effect-chip effect-chip-soon"
+                disabled
+                aria-label="Delay effect, coming soon"
+              >
+                DELAY<span class="chip-badge">SOON</span>
+              </button>
+            </li>
+          </ul>
+        </nav>
 
-        <div id="record-indicator" class="record-indicator hidden"><span class="record-dot"></span>REC</div>
+        <p id="toast-note" class="inline-note toast-note hidden" role="alert"></p>
+        <p id="record-unsupported-note" class="inline-note hidden">Recording isn't supported in this browser.</p>
 
-        <div id="record-controls" class="record-controls">
-          <p id="record-error-note" class="record-note hidden"></p>
-          <p id="record-unsupported-note" class="record-note hidden">Recording isn't supported in this browser.</p>
+        <footer class="hud-bottom">
+          <button id="camera-switch-btn" class="control-btn hidden" type="button" aria-label="Switch camera">
+            <svg
+              viewBox="0 0 24 24"
+              width="22"
+              height="22"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+          </button>
+
           <button id="record-toggle-btn" class="record-btn" type="button" aria-label="Start recording" aria-pressed="false">
             <span class="record-btn-icon"></span>
           </button>
-        </div>
 
-        <div id="recording-preview" class="overlay hidden">
+          <button
+            id="settings-toggle-btn"
+            class="control-btn"
+            type="button"
+            aria-label="Open settings"
+            aria-pressed="false"
+            aria-expanded="false"
+            aria-controls="settings-panel"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="22"
+              height="22"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <line x1="4" y1="6" x2="20" y2="6" />
+              <circle cx="14" cy="6" r="2" fill="currentColor" stroke="none" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <circle cx="8" cy="12" r="2" fill="currentColor" stroke="none" />
+              <line x1="4" y1="18" x2="20" y2="18" />
+              <circle cx="16" cy="18" r="2" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+        </footer>
+
+        <div id="settings-scrim" class="scrim hidden"></div>
+        <section id="settings-panel" class="settings-panel hidden" aria-label="Settings">
+          <div class="settings-panel-header">
+            <h2>Settings</h2>
+            <button id="settings-close-btn" class="icon-btn" type="button" aria-label="Close settings">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path
+                  d="M5 5l14 14M19 5L5 19"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <div class="settings-panel-body">
+            <details class="settings-section" open>
+              <summary>Display</summary>
+              <div class="settings-section-body">
+                <button id="skeleton-toggle-btn" class="btn btn-secondary btn-block" type="button" aria-pressed="false">
+                  SKELETON OVERLAY: OFF
+                </button>
+                <div class="stat-grid" aria-label="Live diagnostics">
+                  <div class="stat-row"><span>FPS</span><span id="fps-value">0</span></div>
+                  <div class="stat-row"><span>Vision</span><span id="vision-status-value">-</span></div>
+                  <div class="stat-row"><span>State</span><span id="tracking-state-value">-</span></div>
+                  <div class="stat-row"><span>Confidence</span><span id="confidence-value">-</span></div>
+                  <div class="stat-row"><span>Landmarks</span><span id="landmark-count-value">-</span></div>
+                  <div class="stat-row"><span>Inference</span><span id="inference-time-value">-</span></div>
+                  <div class="stat-row"><span>Effect</span><span id="current-effect-value">-</span></div>
+                  <!-- Temporary mirroring diagnostic (right wrist). -->
+                  <div class="stat-row"><span>Raw X</span><span id="raw-x-value">-</span></div>
+                  <div class="stat-row"><span>Render X</span><span id="render-x-value">-</span></div>
+                  <div class="stat-row"><span>Mirrored</span><span id="mirrored-value">-</span></div>
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Shadow</summary>
+              <div class="settings-section-body">
+                <div class="field-row">
+                  <label for="shadow-sensitivity-slider">Sensitivity</label>
+                  <input
+                    id="shadow-sensitivity-slider"
+                    type="range"
+                    min="0.5"
+                    max="20"
+                    step="0.5"
+                    value="6"
+                    aria-label="Shadow sensitivity"
+                  />
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Clone</summary>
+              <div class="settings-section-body">
+                <div class="field-group">
+                  <span class="field-label">Clones</span>
+                  <div class="segmented-control" role="group" aria-label="Clone count">
+                    <button type="button" class="segmented-btn" data-clone-count="2">2</button>
+                    <button type="button" class="segmented-btn" data-clone-count="3" aria-pressed="true">3</button>
+                    <button type="button" class="segmented-btn" data-clone-count="5">5</button>
+                  </div>
+                </div>
+                <div class="field-group">
+                  <span class="field-label">Mode</span>
+                  <div class="segmented-control" role="group" aria-label="Clone mode">
+                    <button type="button" class="segmented-btn" data-clone-mode="SAME">SAME</button>
+                    <button type="button" class="segmented-btn" data-clone-mode="DELAYED">DELAYED</button>
+                    <button type="button" class="segmented-btn" data-clone-mode="SPREAD" aria-pressed="true">SPREAD</button>
+                  </div>
+                </div>
+                <button id="clone-reset-all-btn" class="btn btn-secondary btn-block" type="button">RESET ALL</button>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Ghost</summary>
+              <div class="settings-section-body">
+                <div class="field-row">
+                  <label for="ghost-opacity-slider">Opacity</label>
+                  <input
+                    id="ghost-opacity-slider"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value="0.4"
+                    aria-label="Ghost opacity"
+                  />
+                </div>
+                <div class="field-row">
+                  <label for="ghost-delay-slider">Delay</label>
+                  <input
+                    id="ghost-delay-slider"
+                    type="range"
+                    min="0"
+                    max="600"
+                    step="10"
+                    value="90"
+                    aria-label="Ghost delay in milliseconds"
+                  />
+                </div>
+                <div class="field-row">
+                  <label for="ghost-glow-slider">Glow</label>
+                  <input
+                    id="ghost-glow-slider"
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="0.05"
+                    value="1"
+                    aria-label="Ghost glow strength"
+                  />
+                </div>
+                <button id="ghost-trail-toggle-btn" class="btn btn-secondary btn-block" type="button" aria-pressed="true">
+                  TRAIL: ON
+                </button>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Reverse</summary>
+              <div class="settings-section-body">
+                <div class="field-group">
+                  <span class="field-label">Mode</span>
+                  <div class="segmented-control" role="group" aria-label="Reverse preset">
+                    <button type="button" class="segmented-btn" data-reverse-preset="MIRROR" aria-pressed="true">MIRROR</button>
+                    <button type="button" class="segmented-btn" data-reverse-preset="REVERSE_HORIZONTAL">REVERSE H.</button>
+                    <button type="button" class="segmented-btn" data-reverse-preset="DELAYED_MIRROR">DELAYED</button>
+                  </div>
+                </div>
+                <p class="preview-label">Mode: <span id="reverse-preview-label-value">Mirror</span></p>
+              </div>
+            </details>
+          </div>
+
+          <p class="privacy-note">Processing happens locally on this device.</p>
+        </section>
+
+        <div id="recording-preview" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Recording preview">
           <video id="recording-preview-video" class="recording-preview-video" playsinline controls></video>
           <div class="overlay-actions">
             <button id="recording-save-btn" class="btn btn-primary" type="button">SAVE</button>
@@ -139,11 +304,11 @@
           </div>
         </div>
 
-        <div id="camera-loading" class="overlay hidden">
+        <div id="camera-loading" class="overlay hidden" role="status" aria-live="polite">
           <p>Initializing camera &amp; pose model&hellip;</p>
         </div>
 
-        <div id="camera-error" class="overlay hidden">
+        <div id="camera-error" class="overlay hidden" role="alert">
           <p id="camera-error-message"></p>
           <div class="overlay-actions">
             <button id="camera-error-retry-btn" class="btn btn-primary" type="button">Try Again</button>

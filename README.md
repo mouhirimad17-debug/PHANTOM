@@ -32,11 +32,12 @@ npm run dev
 
 Opens on `http://localhost:5173`. Click **ENTER CAMERA**, grant camera
 permission, and you should see your live camera feed with a procedural 3D
-avatar tracking your body. Try the effect toggles in the top-right corner
-(CLONE, INDEPENDENT, GHOST, REVERSE) and tap the round button at the bottom
-of the screen to record a short local clip — see **Recording** below. Click
-**DEBUG** (top right) to see FPS, model status, tracking status, and
-confidence.
+avatar tracking your body, a live status pill up top, and an effect rail
+along the bottom (SHADOW, CLONE, GHOST, REVERSE — DELAY is listed but not
+yet implemented, shown disabled). Tap the round button at the bottom to
+record a short local clip — see **Recording** below — and the settings
+icon next to it to fine-tune an active effect or see live FPS/tracking
+diagnostics.
 
 ## Production build
 

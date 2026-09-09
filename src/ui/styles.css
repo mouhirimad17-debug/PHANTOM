@@ -2,11 +2,21 @@
   color-scheme: dark;
   --bg: #05070a;
   --accent: #00ffc8;
+  --accent-ink: #00201a;
   --danger: #ff4d6d;
+  --warning: #ffb454;
   --text: #eef7f4;
   --text-dim: #9fb4ad;
-  --panel-bg: rgba(8, 14, 14, 0.72);
-  --panel-border: rgba(0, 255, 200, 0.25);
+  --surface: rgba(10, 16, 18, 0.68);
+  --surface-strong: rgba(6, 10, 12, 0.88);
+  --surface-border: rgba(0, 255, 200, 0.22);
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
 * {
@@ -49,18 +59,52 @@ body {
   display: none !important;
 }
 
+/* A single, consistent keyboard-focus treatment for every interactive
+   element in the app — the dark, glassy surfaces throughout this design
+   make the browser's default focus ring hard to see (or invisible) on
+   some platforms, so it's redefined explicitly here rather than per
+   component. Mouse/touch activation never shows it (focus-visible only). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+button {
+  font-family: inherit;
+}
+
 /* ---------- Landing screen ---------- */
 
-#landing-screen {
+.landing-screen {
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.landing-glow {
+  position: absolute;
+  inset: -20%;
   background:
-    radial-gradient(circle at 50% 30%, rgba(0, 255, 200, 0.08), transparent 60%),
-    var(--bg);
+    radial-gradient(circle at 50% 28%, rgba(0, 255, 200, 0.14), transparent 55%),
+    radial-gradient(circle at 80% 80%, rgba(0, 255, 200, 0.05), transparent 50%);
+  animation: landing-glow-drift 12s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes landing-glow-drift {
+  from {
+    transform: scale(1) translateY(0);
+  }
+  to {
+    transform: scale(1.08) translateY(-1.5%);
+  }
 }
 
 .landing-content {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -70,17 +114,27 @@ body {
 }
 
 .brand {
-  font-size: clamp(2.5rem, 10vw, 4rem);
+  font-size: clamp(2.5rem, 10vw, 4.5rem);
+  font-weight: 700;
   letter-spacing: 0.35em;
   margin: 0;
   padding-left: 0.35em; /* optically balance the letter-spacing */
-  text-shadow: 0 0 24px rgba(0, 255, 200, 0.45);
+  text-shadow: 0 0 32px rgba(0, 255, 200, 0.5);
 }
 
 .tagline {
   color: var(--text-dim);
-  margin: 0 0 1.5rem;
-  font-size: 1rem;
+  margin: 0 0 1rem;
+  font-size: clamp(0.85rem, 2.4vw, 1.05rem);
+  font-weight: 500;
+  letter-spacing: 0.2em;
+}
+
+.landing-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .btn {
@@ -88,14 +142,15 @@ body {
   min-width: 220px;
   padding: 0.9rem 1.75rem;
   border-radius: 999px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--surface-border);
   font-size: 1rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   cursor: pointer;
   transition:
     transform 0.15s ease,
-    background-color 0.15s ease;
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .btn:active {
@@ -104,13 +159,55 @@ body {
 
 .btn-primary {
   background: var(--accent);
-  color: #00201a;
+  color: var(--accent-ink);
   border: none;
+  box-shadow: 0 0 28px rgba(0, 255, 200, 0.35);
 }
 
 .btn-secondary {
   background: transparent;
   color: var(--text);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: transparent;
+  min-height: 44px;
+  min-width: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+}
+
+.btn-block {
+  width: 100%;
+  min-width: 0;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.privacy-note {
+  margin: 0.75rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
+.inline-note {
+  max-width: 22rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--warning);
+  background: var(--surface);
+  border: 1px solid rgba(255, 180, 84, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.8rem;
+  margin: 0;
 }
 
 .info-panel {
@@ -121,20 +218,25 @@ body {
   align-items: center;
   justify-content: center;
   gap: 1.25rem;
-  padding: 2rem;
+  padding: max(2rem, var(--safe-top)) 2rem max(2rem, var(--safe-bottom));
   background: rgba(5, 7, 10, 0.94);
   text-align: center;
+}
+
+.info-panel h2 {
+  margin: 0;
+  letter-spacing: 0.06em;
 }
 
 .info-panel p {
   max-width: 32rem;
   color: var(--text-dim);
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 /* ---------- Camera screen ---------- */
 
-#camera-screen {
+.camera-screen {
   background: #000;
 }
 
@@ -170,257 +272,228 @@ body {
   display: block;
 }
 
-#camera-topbar {
+/* Cheap, purely decorative cinematic vignette — never intercepts input. */
+.camera-vignette {
   position: absolute;
-  top: max(1rem, env(safe-area-inset-top));
-  left: 1rem;
-  right: 1rem;
-  display: flex;
-  justify-content: space-between;
-  z-index: 10;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
 }
 
-#camera-topbar-right {
+/* ---------- Top HUD ---------- */
+
+.hud-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
   display: flex;
-  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: max(0.75rem, var(--safe-top)) max(1rem, var(--safe-right)) 0.75rem max(1rem, var(--safe-left));
+}
+
+.hud-brand {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  color: var(--text-dim);
+  text-shadow: 0 0 16px rgba(0, 255, 200, 0.3);
 }
 
 .icon-btn {
   min-height: 44px;
   min-width: 44px;
-  padding: 0 0.9rem;
+  padding: 0;
   border-radius: 999px;
-  border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
-  backdrop-filter: blur(8px);
+  border: 1px solid var(--surface-border);
+  background: var(--surface);
+  backdrop-filter: blur(10px);
   color: var(--text);
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-}
-
-.icon-btn.active {
-  background: var(--accent);
-  color: #00201a;
-  border-color: var(--accent);
-}
-
-.panel {
-  position: absolute;
-  top: calc(max(1rem, env(safe-area-inset-top)) + 56px);
-  left: 1rem;
-  z-index: 10;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  padding: 0.6rem 0.9rem;
-  backdrop-filter: blur(8px);
-  font-size: 0.8rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  min-width: 160px;
-}
-
-.debug-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  color: var(--text-dim);
-}
-
-.debug-row-slider {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.3rem;
-  margin-top: 0.4rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--panel-border);
-}
-
-/* Clone controls: a normal, always-reachable panel (not tucked inside
-   DEBUG) since count/mode are primary controls for using the effect, not
-   advanced tuning — shown whenever CLONE is toggled on. */
-.clone-panel {
-  left: auto;
-  right: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  min-width: 200px;
-}
-
-.clone-panel-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.clone-panel-label {
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.segmented-control {
-  display: flex;
-  gap: 0.3rem;
-}
-
-.segmented-btn {
-  flex: 1;
-  min-height: 36px;
-  padding: 0 0.4rem;
-  border-radius: 8px;
-  border: 1px solid var(--panel-border);
-  background: transparent;
-  color: var(--text);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.segmented-btn[aria-pressed='true'] {
-  background: var(--accent);
-  color: #00201a;
-  border-color: var(--accent);
-}
-
-.clone-reset-btn {
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 0.9rem;
-  font-size: 0.75rem;
-}
-
-/* Ghost controls: stacked below the clone panel in the same right-hand
-   column (a fixed offset rather than dynamic layout, matching the rest of
-   this file's simple absolute positioning) — shown whenever GHOST is
-   toggled on. */
-.ghost-panel {
-  left: auto;
-  right: 1rem;
-  top: calc(max(1rem, env(safe-area-inset-top)) + 56px + 232px);
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  min-width: 200px;
-}
-
-.ghost-panel-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.ghost-panel-row label {
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.ghost-panel-row input[type='range'] {
-  width: 100%;
-  accent-color: var(--accent);
-}
-
-.ghost-trail-btn {
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 0.9rem;
-  font-size: 0.75rem;
-  margin-top: 0.1rem;
-}
-
-.ghost-trail-btn[aria-pressed='true'] {
-  background: var(--accent);
-  color: #00201a;
-}
-
-/* Reverse controls: left-hand column, stacked below the debug panel's
-   fixed position (same fixed-offset stacking convention as the ghost panel
-   on the right) — shown whenever REVERSE is toggled on. */
-.reverse-panel {
-  top: calc(max(1rem, env(safe-area-inset-top)) + 56px + 290px);
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  min-width: 200px;
-}
-
-.reverse-panel-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.reverse-panel-label {
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.reverse-preview-label {
-  color: var(--text-dim);
-}
-
-.reverse-preview-label span {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.debug-row-slider input[type='range'] {
-  width: 100%;
-  accent-color: var(--accent);
-}
-
-.debug-row span:last-child {
-  color: var(--accent);
-}
-
-.overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 1.25rem;
-  padding: 2rem;
-  text-align: center;
-  background: rgba(5, 7, 10, 0.92);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
 }
 
-.overlay p {
-  max-width: 28rem;
-  line-height: 1.5;
-  color: var(--text);
+.icon-btn:hover {
+  background: var(--surface-strong);
 }
 
-.overlay-actions {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  justify-content: center;
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 32px;
+  background: var(--surface);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--surface-border);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  white-space: nowrap;
 }
 
-/* ---------- Recording ---------- */
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
 
-.record-controls {
+.status-dot[data-tone='live'] {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 255, 200, 0.8);
+}
+
+.status-dot[data-tone='searching'] {
+  background: var(--warning);
+  animation: status-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.status-dot[data-tone='lost'],
+.status-dot[data-tone='error'] {
+  background: var(--danger);
+}
+
+@keyframes status-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ---------- Effect rail ---------- */
+
+.effect-rail {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: max(1.5rem, env(safe-area-inset-bottom));
+  bottom: calc(max(1rem, var(--safe-bottom)) + 92px);
+  z-index: 10;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.effect-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.effect-rail-list {
+  list-style: none;
+  display: flex;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0 max(1rem, var(--safe-left)) 0 max(1rem, var(--safe-right));
+  justify-content: center;
+  min-width: min-content;
+  width: 100%;
+}
+
+.effect-chip {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 1.1rem;
+  border-radius: 999px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface);
+  backdrop-filter: blur(10px);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  position: relative;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.effect-chip[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  box-shadow: 0 0 18px rgba(0, 255, 200, 0.4);
+}
+
+.effect-chip-soon {
+  color: var(--text-dim);
+}
+
+.effect-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.chip-badge {
+  margin-left: 0.4rem;
+  font-size: 0.55rem;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  border: 1px solid var(--surface-border);
+  border-radius: 999px;
+  padding: 0.05rem 0.35rem;
+  vertical-align: middle;
+}
+
+/* ---------- Bottom control bar ---------- */
+
+.hud-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 10;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
+  gap: 2.25rem;
+  padding: 0.5rem max(1.25rem, var(--safe-right)) max(1rem, var(--safe-bottom)) max(1.25rem, var(--safe-left));
+}
+
+.control-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface);
+  backdrop-filter: blur(10px);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.control-btn:hover {
+  background: var(--surface-strong);
+}
+
+.control-btn[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.control-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .record-btn {
@@ -434,6 +507,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .record-btn-icon {
@@ -458,20 +532,28 @@ body {
   cursor: not-allowed;
 }
 
-.record-note {
-  max-width: 20rem;
-  text-align: center;
-  font-size: 0.8rem;
-  color: var(--text-dim);
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  padding: 0.4rem 0.7rem;
+/* Sits above the effect rail (not at the same height as it — that would
+   overlap the chips whenever a note is shown, since the rail is always
+   present). */
+.toast-note {
+  position: absolute;
+  left: 50%;
+  bottom: calc(max(1rem, var(--safe-bottom)) + 148px);
+  transform: translateX(-50%);
+  z-index: 15;
+}
+
+#record-unsupported-note {
+  position: absolute;
+  left: 50%;
+  bottom: calc(max(1rem, var(--safe-bottom)) + 148px);
+  transform: translateX(-50%);
+  z-index: 9;
 }
 
 .record-indicator {
   position: absolute;
-  top: max(1rem, env(safe-area-inset-top));
+  top: calc(max(0.75rem, var(--safe-top)) + 56px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
@@ -480,7 +562,7 @@ body {
   gap: 0.4rem;
   background: rgba(0, 0, 0, 0.55);
   color: var(--text);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   padding: 0.3rem 0.7rem;
@@ -505,9 +587,220 @@ body {
   }
 }
 
+/* ---------- Settings drawer ---------- */
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.settings-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 16;
+  max-height: min(78vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-strong);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid var(--surface-border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: 1rem 1.1rem max(1rem, var(--safe-bottom));
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin-bottom: 0.5rem;
+}
+
+.settings-panel-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.settings-panel-body {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.settings-section {
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  padding: 0 0.9rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.settings-section summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text);
+  list-style: none;
+}
+
+.settings-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section summary::before {
+  content: '+';
+  display: inline-block;
+  width: 1.2em;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.settings-section[open] summary::before {
+  content: '−';
+}
+
+.settings-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.2rem 0 1rem;
+}
+
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field-row label {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.field-row input[type='range'],
+.stat-grid + input[type='range'] {
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--accent);
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.field-label {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.segmented-control {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.segmented-btn {
+  flex: 1;
+  min-height: 44px;
+  padding: 0 0.4rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--surface-border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.segmented-btn[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.preview-label {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.preview-label span {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.stat-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--text-dim);
+}
+
+.stat-row span:last-child {
+  color: var(--accent);
+}
+
+/* ---------- Overlays (loading / error / recording preview) ---------- */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: max(2rem, var(--safe-top)) 2rem max(2rem, var(--safe-bottom));
+  text-align: center;
+  background: rgba(5, 7, 10, 0.92);
+  backdrop-filter: blur(6px);
+}
+
+.overlay p {
+  max-width: 28rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .recording-preview-video {
   max-width: 100%;
   max-height: 60vh;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: #000;
 }
