@@ -1,780 +1,351 @@
 # Architecture
 
-PHANTOM is a static, client-only TypeScript app (no backend/database/auth).
-Modules are organized by responsibility under `src/`, with narrow interfaces
-between them so effects/avatar work can be added without touching camera,
-vision, or rendering internals.
+This document describes PHANTOM's current architecture: the module map, the
+per-frame data flow, and the key design decisions behind the trickier parts
+of the system (mirroring, coordinate mapping, the tracking state machine,
+adaptive inference throttling, and the recording pipeline). It reflects the
+codebase as of the production-readiness pass — see
+[QA_REPORT.md](./QA_REPORT.md) for the audit history and
+[TESTING.md](./TESTING.md) for how each piece is verified.
+
+## Module map
 
 ```
 src/
-  app/        top-level orchestrator (App.ts): wires everything, owns screen
-              transitions and error handling
-  camera/     MediaStream lifecycle (permissions, start/stop, facing switch)
-  vision/     MediaPipe Tasks Vision wrapper (pose model load + per-frame detect)
-  tracking/   raw landmarks -> smoothed, scene-space TrackingFrame
-  rendering/  Three.js scene/camera/renderer/lighting/floor + render loop
-  avatar/     procedural humanoid mannequin (capsule-primitive limbs,
-              quaternion-oriented from tracked joint positions each frame)
-  effects/    Effect interface + implementations: IndependentShadowEffect,
-              CloneEffect, GhostEffect, ReverseEffect (Delay not yet implemented)
-  recording/  RecordingManager — composites the camera frame + Three.js
-              render into one canvas and records it locally via MediaRecorder
-  ui/         DOM screen controllers (LandingScreen, CameraScreen) + styles.css
-  utils/      shared, dependency-free helpers (math, DOM, FPS, pose landmark constants)
-  types/      shared TypeScript types/errors, no runtime logic
+  app/          App.ts — top-level orchestrator; owns screen transitions
+                 and translates module errors into user-facing messages.
+                 Contains no rendering or detection logic itself.
+  camera/       CameraController — MediaStream lifecycle for one <video>.
+  vision/       PoseVision — wraps MediaPipe Tasks Vision's PoseLandmarker.
+  tracking/     TrackingManager, CoordinateMapper, LandmarkSmoother,
+                OneEuroFilter, TrackingHistory, trackingFrame,
+                transformLandmarkForRender — turns raw model output into a
+                stable, mirrored, scene-space TrackingFrame.
+  avatar/       Avatar, limbMath, avatarGeometry — the procedural 3D
+                humanoid every effect renders.
+  effects/      Effect interface + IndependentShadowEffect, CloneEffect,
+                GhostEffect, ReverseEffect, reverseTransforms.
+  rendering/    SceneManager (Three.js scene/camera/renderer/render loop),
+                DebugSkeleton (debug-mode-only diagnostic overlay).
+  recording/    RecordingManager — composites and records the visible scene
+                locally via MediaRecorder.
+  ui/           CameraScreen, LandingScreen, styles.css — the DOM shell;
+                owns no tracking/effect/recording logic itself, only
+                callbacks into App.
+  utils/        Small, dependency-free helpers (math, WebGL detection,
+                FPS counting, DOM lookup, debug-mode flag, pose landmark
+                indices/connections).
+  types/        Shared type/error definitions per domain (camera, vision,
+                tracking, recording).
 ```
 
-## Data flow (current, per rendered frame)
+Dependencies flow one way: `ui` and `app` depend on everything else, but
+`camera`, `vision`, `tracking`, `avatar`, `effects`, `rendering`, and
+`recording` never depend on `app` or `ui`. Each of those modules is
+independently testable (see TESTING.md) and knows nothing about screens,
+buttons, or user-facing copy.
 
-```
-CameraController --(HTMLVideoElement)--> PoseVision.detect()
-                                              |
-                                              v
-                                     RawPoseFrame (landmarks +
-                                     worldLandmarks, normalized/metric)
-                                              |
-                                              v
-                                     TrackingManager.update()
-                          (per-axis OneEuroFilter smoothing, state machine,
-                           normalized coords -> Three.js scene space,
-                           derived fields: bodyCenter/torsoRotation/bodyScale)
-                                              |
-                                              v
-                                       TrackingFrame (stable, scene-space)
-                                        |                          |
-                                        v                          v
-                               DebugSkeleton.update()      TrackingHistory.push()
-                          (renders joints/bones in the      (ring-buffer snapshot,
-                           Three.js scene, dev-only)          for future Delay/Reverse)
-                                        |
-                                        v
-                               Avatar.updateFromTracking()
-                          (procedural mannequin: 15 capsule limb
-                           segments + head, quaternion-oriented
-                           between joint pairs each frame)
-                                              |
-                                              v
-                                    SceneManager renders on a transparent
-                                    <canvas> composited over the <video>
-```
+## Data flow (per rendered frame)
 
-`SceneManager` drives one `requestAnimationFrame` loop and calls registered
-frame listeners every render frame. Pose *inference* is throttled
-independently (see `App.handleFrame`) so a slow model never blocks
-rendering — the skeleton simply updates less often on weak devices.
+1. `SceneManager` runs a `requestAnimationFrame` loop and fires its
+   `onFrame` listeners every frame with the real elapsed delta time.
+2. `App.handleFrame()` (the one `onFrame` listener) checks whether enough
+   time has passed since the last pose-detection call (see "Adaptive
+   inference throttling" below) — if so, it runs detection.
+3. `PoseVision.detect()` runs the model synchronously on the current video
+   frame and returns raw, normalized MediaPipe landmarks, or `null` if
+   nothing was detected this call.
+4. `TrackingManager.update()` takes that raw result and produces a
+   `TrackingFrame`: it advances the tracking state machine
+   (INITIALIZING → TRACKING → RECOVERING → LOST), applies per-joint One
+   Euro Filter smoothing, and maps each landmark into Three.js scene space
+   via `CoordinateMapper` — which is also where the app's single mirroring
+   flip happens (see "Mirroring" below).
+5. `Avatar.updateFromTracking()` and every enabled `Effect.update()` read
+   that same `TrackingFrame` and update their own Three.js objects'
+   transforms/materials in place — nothing is created or destroyed per
+   frame (see "Object pooling" below).
+6. `SceneManager` calls `renderer.render()`.
+7. `SceneManager`'s `onAfterRender` listeners fire — this is where
+   `RecordingManager`, if actively recording, draws the just-rendered frame
+   into its private composite canvas (see "Recording" below). This runs
+   *after* render deliberately, so it captures this frame's pixels, not the
+   previous one's.
 
 ## Key design decisions
 
-- **Coordinate mapping (`tracking/CoordinateMapper.ts`)**: MediaPipe's
-  normalized `landmarks` (per-joint 2D, image-space) are projected onto a
-  plane in front of the Three.js `PerspectiveCamera`, at a depth derived
-  from that joint's `worldLandmarks` z (metric, hip-relative). This keeps
-  every joint's on-screen (x, y) pixel-accurate against the displayed video
-  while still giving real perspective depth behavior — a hand pushed toward
-  the camera visibly grows/moves outward, exactly as a real object would.
-- **`object-fit: cover` crop compensation**: the video element is displayed
-  cropped-to-fill (`utils/math.ts: computeCoverCrop`). Landmark coordinates
-  are re-normalized against the visible crop rect, not the raw video frame,
-  so the overlay stays aligned regardless of the camera's native aspect
-  ratio vs. the viewport's.
-- **Mirroring (single source of truth: `cameraMirrored: boolean`)**: the
-  front camera is mirrored via CSS (`transform: scaleX(-1)`) on the
-  `<video>` element **only**. The overlay `<canvas>` is deliberately never
-  CSS-mirrored (see the comment on `#scene-canvas` in `ui/styles.css`) —
-  instead, `transformLandmarkForRender()` (`tracking/transformLandmarkForRender.ts`)
-  applies the equivalent flip in software, once, inside
-  `CoordinateMapper.mapJoint()`, before the coordinate is ever turned into a
-  Three.js world position. `App.enterCamera()` computes `cameraMirrored`
-  once (`facing === 'user'`) and passes it to both
-  `TrackingManager.setCameraMirrored()` (software mirror, for the canvas)
-  and `CameraScreen.setMirrored()` (CSS mirror, for the video) — the two
-  must never both mirror the same element, or the skeleton moves opposite
-  to the visible body. A `DEBUG`-panel diagnostic (RAW X / RENDER X /
-  MIRRORED for the right wrist) makes this pipeline inspectable at runtime.
-- **Smoothing (`tracking/OneEuroFilter.ts`, `tracking/LandmarkSmoother.ts`)**:
-  each joint's x/y/z is filtered by its own One Euro Filter (Casiez, Roussel
-  & Vogel 2012) rather than a fixed-alpha average — a fixed alpha can't
-  suppress jitter on a still body *and* avoid lag on a fast-moving one at
-  the same time, since those pull the single knob in opposite directions.
-  The One Euro Filter widens its cutoff with estimated speed instead, so it
-  stays smooth when still and responsive when moving.
-  `LandmarkSmoother.setSmoothingStrength(0..1)` exposes this as one
-  normalized knob.
-- **Tracking state machine (`types/tracking.ts: TrackingState`)**:
-  `INITIALIZING -> TRACKING -> RECOVERING -> LOST`, driven by
-  `TrackingManager`. A short dropout (< 600ms) is `RECOVERING` — the last
-  smoothed pose is held, and the filters' continuity is *preserved* across
-  the gap so tracking resumes smoothly. A dropout past that grace period
-  becomes `LOST`; when detection resumes from `LOST` (or the very first
-  detection, from `INITIALIZING`), `LandmarkSmoother.reset()` is called so
-  the pose snaps immediately to the new detection instead of dragging in
-  from a stale, possibly very old, filter state — "recover quickly" and
-  "don't jump on a one-frame dropout" are different requirements handled by
-  different code paths on purpose.
-- **Derived spatial fields**: `TrackingManager` computes `bodyCenter`,
-  `shoulderCenter`, `hipCenter`, `torsoRotation` (approximate yaw from the
-  shoulder line), and `bodyScale` (shoulder width) from the already-smoothed
-  joint positions every time a body is present — see
-  `TrackingManager.updateDerivedFields()`. These, plus the named joint
-  accessors (`frame.leftWrist`, etc. — the same objects as
-  `frame.landmarks[PoseLandmark.LEFT_WRIST]`, just self-documenting), are
-  what avatar/effect code should read instead of raw landmark indices.
-- **TrackingHistory (`tracking/TrackingHistory.ts`)**: a fixed-capacity ring
-  buffer of `TrackingFrame` snapshots (`push`/`getLatest`/`getAtOffset`/
-  `clear`, configurable logical duration), for effects that need to look
-  backward in time. `App.ts` owns one top-level instance it pushes into
-  after every tracking update (still unread, reserved for a future Reverse
-  effect or debug tooling); `IndependentShadowEffect` owns a separate,
-  private instance of the same class for its own delay — effects that need
-  history are expected to own their instance rather than share App's, so
-  each effect's delay window is independent.
-- **No per-frame allocation**: `TrackingFrame`'s object graph — landmarks,
-  named joint aliases, derived-center vectors — is built exactly once by
-  `tracking/trackingFrame.ts: createTrackingFrame()` and mutated in place
-  forever after (`copyTrackingFrame()` for taking an independent snapshot,
-  used by `TrackingHistory`). `DebugSkeleton`'s `InstancedMesh`/
-  `BufferAttribute` follow the same one-allocation-then-mutate pattern (see
-  also the "reused scratch vector" pattern in `tracking/CoordinateMapper.ts`).
-- **Graceful degradation**: `PoseVision` retries model init on CPU if the
-  GPU delegate fails; `App` adaptively widens the pose-inference interval
-  based on a rolling average of actual inference duration, so a slow device
-  falls back to a lower detection rate instead of janking the render loop.
-- **Typed errors** (`types/camera.ts: CameraError`, `types/vision.ts:
-  VisionError`) carry a machine-readable `type` so the UI layer
-  (`App.describeError`) can show a specific, actionable message instead of
-  a generic failure string.
+### Mirroring
+
+There is exactly **one** place in the entire codebase where a coordinate is
+ever flipped for mirroring: `transformLandmarkForRender()`. Everything else
+— `CameraScreen`'s CSS mirror on the `<video>` element, `CoordinateMapper`,
+and `RecordingManager`'s composite draw — reads a single `cameraMirrored`
+boolean (derived from which camera is active: the front/"user" camera is
+mirrored, the rear/"environment" camera is not) and either applies or
+doesn't apply the *same* transform. This was a deliberate fix for an early
+bug where the skeleton moved opposite to the body because two separate
+layers were each mirroring independently. The canvas holding the 3D
+overlay is never CSS-mirrored — only the `<video>` element is — because the
+overlay's mirroring is baked into its coordinates in software instead;
+mirroring both would double-flip it.
+
+### Coordinate mapping
+
+MediaPipe's normalized landmarks (`[0,1]`, origin top-left, relative to the
+raw camera frame) are not what's displayed — the `<video>` element uses
+CSS `object-fit: cover`, which crops the frame to fill its container.
+`computeCoverCrop()` computes exactly which fraction of the raw frame is
+actually visible for the current video/container aspect ratio, and
+`CoordinateMapper` uses that crop rectangle (plus the mirroring flip above)
+to convert each landmark into the same space the user actually sees, then
+into Three.js world coordinates. Getting this wrong is what causes a
+skeleton that "looks right at some aspect ratios and drifts at others" —
+this is why `notifyViewportChanged()` is wired to `window`'s `resize`
+event, so a resize or orientation change recomputes the crop immediately
+rather than leaving it stale.
+
+### Smoothing: One Euro Filter
+
+Raw per-frame landmark positions are noisy enough to look jittery if
+rendered directly. `LandmarkSmoother` runs a per-axis, per-joint
+[One Euro Filter](https://cristal.univ-lille.fr/~casiez/1euro/) (Casiez,
+Roussel & Vogel 2012) — an adaptive filter that smooths more when a joint
+is nearly still (to kill jitter) and less when it's moving fast (to avoid
+visible lag on deliberate motion), which is a better trade-off for this use
+case than a fixed-window moving average. Filters reset when tracking is
+lost or reinitializing, but deliberately **not** during a brief
+`RECOVERING` dropout, so a one-frame miss doesn't restart smoothing from
+cold and cause a visible jump.
+
+### Tracking state machine
+
+```
+INITIALIZING -> (detection) -> TRACKING -> (dropout) -> RECOVERING -> (grace period elapses) -> LOST
+                                    ^                         |
+                                    +---- (detection) --------+
+```
+
+`RECOVERING` exists so a single missed detection (the model occasionally
+returns nothing for one frame even with a body in view) doesn't
+immediately hide the avatar or reset smoothing — it's treated as "probably
+still there" for a short grace period (`LOSS_GRACE_MS`) before formally
+declaring `LOST`. `TrackingFrame.present` is true for both `TRACKING` and
+`RECOVERING` (safe to render); `TrackingFrame.lost` is true only for `LOST`.
+
+### Adaptive inference throttling
+
+Pose inference is decoupled from the render loop's frame rate: the render
+loop always runs at display refresh rate, but `App` only calls
+`PoseVision.detect()` at most every `detectIntervalMs`, which is derived
+from a rolling average of how long inference has actually been taking on
+this device (`avgDetectDurationMs * DETECT_INTERVAL_SAFETY_FACTOR`),
+clamped to a sane range. This means a slow device automatically infers less
+often instead of blocking rendering or accumulating a backlog — the render
+loop, UI, and effect animation stay smooth even when the model itself is
+slow.
+
+### Reentrancy guards
+
+Three async entry points guard against being invoked while already in
+flight, sharing the same in-flight `Promise` instead of racing a second
+attempt: `App.enterCamera()`, `CameraController.start()`, and
+`PoseVision.init()`. This was a real, fixed bug (see QA_REPORT.md) — a
+double-tap on ENTER CAMERA used to start two concurrent camera streams and
+two concurrent model loads, silently leaking whichever one didn't win.
+`SceneManager.start()` has the same kind of guard (`rafHandle !== null`)
+against double-starting the render loop.
+
+### Object pooling / zero-allocation hot paths
+
+Every per-frame code path — tracking, smoothing, coordinate mapping, avatar
+updates, and every effect's `update()` — is designed to allocate nothing.
+Scratch `Vector3`/`Quaternion`/`Object3D` values are created once (in a
+constructor or module scope) and mutated in place; `TrackingFrame` objects
+are likewise allocated once and mutated, never reconstructed per frame;
+`TrackingHistory` is a fixed-capacity ring buffer that copies into existing
+slots. `CloneEffect` pre-allocates a fixed pool of `Avatar` instances (sized
+to the largest selectable clone count) rather than creating/destroying
+avatars as the count changes. `GhostEffect`'s motion trail renders through
+one `InstancedMesh` per trail step (covering every echoed joint in a single
+draw call) rather than one mesh per joint, after profiling showed the
+naive version costing roughly 3x the base avatar's render time under CPU
+throttling.
+
+## Camera (`camera/CameraController.ts`)
+
+Owns the `MediaStream` lifecycle for one `<video>` element: `start()`,
+`stop()`, `switchFacing()`, capability detection (`canSwitchFacing`, from
+`MediaStreamTrack.getCapabilities().facingMode`), and typed `CameraError`s
+covering permission denial, no camera found, camera already in use,
+insecure context, and unsupported browsers. `stop()` always stops every
+track on the current stream before clearing it — this is the single place
+camera hardware is ever released, and it runs unconditionally whenever the
+app leaves the camera experience (`App.exitCamera()`) or starts a new
+stream (`start()` calls `stop()` first). `switchFacing()` falls back to
+restoring the previously-active facing mode if the new one fails to start,
+so a failed camera switch degrades to "camera keeps working as before"
+rather than leaving the camera stopped with no live view.
+
+## Vision (`vision/PoseVision.ts`)
+
+Wraps MediaPipe Tasks Vision's `PoseLandmarker`: loads the WASM runtime and
+model (GPU delegate first, falling back to CPU if the GPU delegate is
+rejected by the device/browser), then runs synchronous per-frame detection
+in `VIDEO` running mode. `dispose()` closes the landmarker and is the
+counterpart to `init()`, provided for completeness even though the current
+app architecture treats the loaded model as a single, page-lifetime
+resource (see "What is never torn down" below).
 
 ## Avatar (`avatar/Avatar.ts`)
 
-A lightweight procedural humanoid — no external 3D assets, every part is a
-Three.js primitive built once and reused. Structure:
-
-```
-root
-├─ torso group: head, neck, upper torso, lower torso, left arm, right arm
-└─ hips group: left leg, right leg
-```
-
-Each of the 15 limb segments (neck, torso halves, upper-arm/forearm/hand ×2,
-thigh/shin/foot ×2) is one capsule `Mesh` stretched and oriented between two
-tracked joint positions every frame — see `avatar/limbMath.ts:
-computeSegmentTransform()`. This is deliberately **not** a forward-kinematic
-chain (no segment's rotation is derived from its parent's rotation): each
-segment reads its own two endpoint positions straight from the
-already-computed `TrackingFrame`, which are independent per-joint scene
-positions (see the coordinate-mapping note above), not a rigid rig. That
-means one noisy joint can only ever perturb the one or two segments
-touching it, never propagate instability down a chain — directly serving
-"stay visually coherent while the user moves." Orientation is always a
-`Quaternion.setFromUnitVectors` (never Euler angles), which has no
-rotation-order ambiguity or gimbal lock for a single direction-align like
-this; `Avatar.setRotation()` (the whole-avatar override) uses Euler angles
-instead, which is fine there because it's one independent transform, not a
-chained sequence.
-
-- **Display modes**: `setDisplayMode('mannequin' | 'skeleton' | 'shadow' |
-  'ghost')` swaps which of four pre-built materials each mesh uses
-  (dark/neutral + soft emissive for mannequin; brighter, thinner for
-  skeleton; near-black, transparent, barely-emissive for shadow — see
-  `effects/IndependentShadowEffect.ts`; translucent, glow-accented for ghost
-  — see `effects/GhostEffect.ts`) and toggles head-mesh/joint-marker
-  visibility — it never creates or destroys meshes. 'shadow' and 'ghost'
-  both reuse the full-bodied mannequin radius (only the material differs);
-  flattening/glow/breathing are the driving effect's job, not a different
-  geometry.
-- **Reuse**: `avatar/avatarGeometry.ts` holds ONE shared capsule geometry
-  (used by all 15 limbs, differentiated only by each mesh's own
-  position/quaternion/scale) and ONE shared sphere geometry (head + joint
-  markers + a driving effect's own contact-shadow/trail blobs), as
-  module-level singletons shared by every `Avatar` instance. Materials are
-  the one exception — each `Avatar` builds its own set of four, because
-  `setOpacity()` must affect one instance without bleeding into every other
-  instance sharing the scene (exactly what happens once
-  `IndependentShadowEffect`'s or `GhostEffect`'s own `Avatar` needs a
-  different opacity than the live one). `setGlowIntensity()` follows the
-  same per-instance-material logic, but only ever touches the ghost
-  material — the other three display modes keep their own fixed emissive
-  levels regardless of how a ghost's `glowStrength` is set.
-- **Shadow**: every limb mesh sets `castShadow`/`receiveShadow`, so the
-  floor/light/shadow-map already set up in `rendering/SceneManager.ts`
-  render a real soft shadow under the character — no new lighting was
-  needed for this.
-- **Visibility**: `updateFromTracking()` shows the avatar only when
-  `frame.present` is true, and otherwise freezes (does not reset) the last
-  pose — `setVisible()` is a separate, composable override (avatar hidden
-  = `visibleOverride && lastPresent`), independent of tracking state.
+A procedural, low-poly humanoid built entirely from Three.js primitives —
+no external 3D assets. Every limb is a single capsule mesh stretched and
+oriented between two tracked joint positions each frame
+(`limbMath.computeSegmentTransform`, via quaternions — never Euler angles,
+which would need an arbitrary rotation-order choice and can gimbal-lock).
+Because each segment reads its own two endpoint positions directly from the
+`TrackingFrame` rather than a forward-kinematic chain of parent rotations,
+one noisy joint can only ever perturb the one or two segments touching it,
+never propagate instability down a chain. Four display modes
+(`mannequin`/`skeleton`/`shadow`/`ghost`) swap materials only — geometry is
+shared and never recreated.
 
 ## Effects (`effects/`)
 
-`effects/Effect.ts` defines the contract every effect implements:
-`enable()/disable()/update(deltaTimeSeconds, trackingFrame)/reset()`. An
-effect owns whatever it renders — typically its own `Avatar` instance(s) —
-and never touches camera/vision internals directly. `App.ts` constructs
-effects alongside the base `Avatar`/`DebugSkeleton`, and calls `update()`
-once per detection frame with the live `TrackingFrame` and the real elapsed
-time since the previous call.
+Every effect implements the same small `Effect` interface
+(`enable`/`disable`/`update`/`reset`) and owns its own `Avatar` (or, for
+`CloneEffect`, a fixed pool of them), driven entirely by the live
+`TrackingFrame` — effects never touch camera or vision internals directly.
 
-### IndependentShadowEffect (`effects/IndependentShadowEffect.ts`)
+- **IndependentShadowEffect** — a dark, flattened duplicate that trails the
+  live avatar with a deterministic delay and a damped-spring settle (never
+  `Math.random()`), with per-joint drift so extremities lag the core
+  convincingly (an animation "follow-through" technique).
+- **CloneEffect** — 2/3/5 selectable copies of the user in SAME/DELAYED/
+  SPREAD arrangements, each driven directly from a stored `TrackingFrame`
+  with no spring/smoothing (contrast Shadow) — copies are meant to read as
+  faithful duplicates, just offset in space and/or time.
+- **GhostEffect** — a translucent, glow-accented duplicate using normal
+  (not additive) alpha blending, so it stays readable over both bright and
+  dark backgrounds. Deterministic scale "breathing" and vertical drift, an
+  optional single-sample historical delay, and a fixed-size fading motion
+  trail.
+- **ReverseEffect** — "the Phantom responds differently from the user," via
+  three pure, deterministic transforms (`reverseTransforms.ts`): MIRROR
+  (rigid reflection about the body's own centerline), REVERSE_HORIZONTAL
+  (limb extremities' horizontal displacement inverted from their proximal
+  joint; core joints pass through unchanged), and DELAYED_MIRROR (MIRROR
+  sourced from a short historical sample).
 
-The first implemented effect, and the pattern future ones should follow: it
-owns a second `Avatar` (in `'shadow'` display mode) and feeds it a
-synthetic `TrackingFrame` this effect computes itself each frame —
-reusing 100% of `Avatar`'s existing quaternion/geometry machinery rather
-than rendering anything bespoke. Per update:
-
-1. Push the live frame into a private `TrackingHistory` and look up the
-   pose from `delayMilliseconds` ago as the spring's *target* — the visual
-   "shadow follows with a delay."
-2. For every joint, pull the target's Y toward the floor by
-   `verticalFlatten` (0 = untouched, 1 = pinned to floor Y) — done on the
-   target itself, not via a non-uniform mesh scale, so it flows through
-   `Avatar`'s existing per-limb orientation math unchanged.
-3. Integrate a small deterministic damped-spring per joint
-   (`followStrength` = stiffness, `recoverySpeed` = damping) toward that
-   flattened, delayed target — **never `Math.random()`**. An underdamped
-   spring naturally overshoots and settles, which is exactly "the shadow
-   continues a tiny amount before settling" without any special-cased
-   logic for it.
-4. Scale each joint's effective stiffness/damping by a fixed, per-landmark
-   `DRIFT_FACTOR_BY_LANDMARK` table (shoulders/hips ~0.05, wrists/
-   fingertips ~0.75-1.0) before integrating, controlled by one
-   `driftAmount` knob. This is the "raises an arm and the shadow doesn't
-   perfectly copy it" requirement, modeled on the animation principle of
-   follow-through/overlapping action — extremities lag and settle later
-   than the core, deterministically, so the core never detaches far enough
-   to break the illusion.
-5. Apply `horizontalOffset`/`rotationOffset` via `Avatar.setPosition()`/
-   `setRotation()` — exactly what those root-transform methods exist for —
-   and `opacity` via `Avatar.setOpacity()`.
-6. Position two small flattened, semi-transparent spheres (reusing the
-   avatar system's shared sphere geometry) at the ankles, parented under
-   the shadow avatar's own root, for contact darkening — they inherit its
-   visibility and offset for free.
-
-A cheap stand-in for "blurred, without expensive GPU effects": the shadow
-material sets `depthWrite: false` so overlapping semi-transparent limbs
-blend instead of clipping into hard seams — no shader, no render target.
-
-Every numeric parameter is clamped (see `PARAM_RANGES`) so the illusion
-can't be driven into instability or full detachment regardless of how a
-control (like the sensitivity slider) is set.
-
-`DebugSkeleton` remains a separate, dev-only diagnostic, unrelated to any
-effect — it is not, and was never meant to become, the final avatar.
-
-### CloneEffect (`effects/CloneEffect.ts`)
-
-Multiple virtual copies of the user, each a direct read of a stored
-`TrackingFrame` — unlike IndependentShadowEffect, there is deliberately **no**
-spring/smoothing here: a clone is meant to read as a faithful duplicate, just
-offset in space and/or time, not a settling illusion.
-
-- **Pool**: a fixed array of `MAX_CLONES` (5) `Avatar` instances (in
-  `'mannequin'` mode, so clones look like real duplicates, not shadows) is
-  constructed once, in the constructor, and never resized. Enabling the
-  effect, or changing `count`/`mode`, only changes which pool slots are
-  `setVisible(true)` and what frame drives them each `update()` — no
-  `Avatar` is ever constructed or destroyed after startup. This mirrors the
-  IndependentShadowEffect's "own an Avatar, reuse it forever" pattern, just
-  with N instances instead of one.
-- **Arrangement pattern**: `CLONE_SLOT_PATTERNS` is a fixed, deterministic
-  table of small (x, z) offsets per selectable `count` (2/3/5), scaled by a
-  base spacing and the tracked `bodyScale` at render time. Every clone's
-  position is therefore always a small, bounded function of the live body —
-  never a zero offset (which would make clones invisibly stack) and never an
-  arbitrary/unrelated position — directly satisfying "do not create
-  arbitrary floating copies without relation to the user." The pattern is
-  keyed by `count` (not just sliced from the 5-clone table) so 2 clones are
-  always a clean symmetric left/right pair rather than an arbitrary subset
-  of the 5-clone layout.
-- **Modes**: SAME and DELAYED use a small `BASE_SPACING`; SPREAD multiplies
-  that same base pattern by a configurable `spreadDistance`, so all three
-  modes share one arrangement table and differ only in scale and time
-  source:
-  - **SAME** — every visible clone reads the current live `TrackingFrame`
-    directly (`copyTrackingFrame`).
-  - **DELAYED** — clone `i` reads its own private `TrackingHistory` at
-    `i * delayStepMilliseconds` ago (falling back to the live frame if the
-    history doesn't go back far enough yet, e.g. right after enabling), so
-    later clones lag progressively further behind — a visible "motion echo"
-    with no smoothing math needed, since the history buffer already holds
-    exact past frames.
-  - **SPREAD** — every visible clone reads the current live frame, like
-    SAME, but at the wider `spreadDistance`-scaled offset.
-- **Visual variation**: each clone's opacity is the configured base opacity
-  times a fixed per-index fade (`1 - i * OPACITY_FADE_PER_INDEX`, floored at
-  `MIN_OPACITY_FACTOR`), via `Avatar.setOpacity()` — deterministic, not
-  randomized, and enough to make the lineup readable as distinct copies at a
-  glance.
-- **Weak tracking / entering-leaving frame**: when `trackingFrame.present`
-  is `false`, every pooled clone is marked `LOST` and hidden — clones never
-  hold a stale position with no visible live user to relate to. Regaining
-  tracking resumes normally on the next present frame.
-- **Independent transform roots**: each pool slot's `Avatar` has its own
-  `root` `Object3D` (created inside `Avatar`'s own constructor, same as the
-  live avatar), so `setPosition()`/`setOpacity()` on one clone never affects
-  any other — no shared transform state between slots.
-
-#### Performance considerations
-
-- **Pool, never allocate per frame**: the 5-`Avatar` pool is built once at
-  effect-construction time. `update()` only mutates existing meshes'
-  transforms/materials and toggles `visible` — no `Mesh`, `Geometry`, or
-  `Material` is ever created or disposed while the effect is running. This
-  is the single most important cost control here: the expensive part of an
-  `Avatar` (allocating 15+ meshes and their materials) happens at most 5
-  times, ever, for this effect, not once per clone per frame.
-- **Draw-call budget**: each `Avatar` costs roughly the same ~17 draw calls
-  as the live avatar (15 limb-segment capsules + head + joint markers, per
-  `ARCHITECTURE.md`'s Avatar section), plus one shadow-map pass per shadow-
-  casting light if shadows are enabled. With the effect at its maximum of 5
-  clones, that's on the order of 5x the live avatar's own render cost
-  **in addition to** the live avatar and any other enabled effect (e.g.
-  IndependentShadowEffect) — roughly 6 full bodies on screen at once at the
-  `count: 5` cap. All 15 limb segments across all clones still share the
-  same two module-level geometries (`avatarGeometry.ts`), so the added cost
-  is draw calls and per-clone materials, not geometry memory.
-- **Why the count is hard-capped at 5**: `CloneCount` is a `2 | 3 | 5` union
-  (compile-time enforced) and the pool is sized to `MAX_CLONES = 5` — there
-  is no path, UI or otherwise, to request more. 5 extra bodies (plus the
-  live one) is already a meaningful draw-call and shadow-map load on a
-  mid-range mobile GPU; going higher would risk the same frame-rate cliff
-  that motivated `App.ts`'s adaptive pose-inference throttling elsewhere in
-  this codebase, for a mode whose whole point is a fixed, small, "photo
-  booth" style copy count rather than a crowd effect.
-- **Recommendation for weaker devices**: on a device where the base avatar
-  or IndependentShadowEffect already show a low DEBUG-panel FPS, prefer
-  `count: 2` (and `mannequin`-only, no other effect layered on top) over the
-  5-clone SPREAD arrangement — 2 extra bodies is a much smaller draw-call
-  and shadow increment than 5, and no shading/quality options need to change
-  to get there since it's just a UI selection. There is deliberately no
-  automatic device-tier detection here (consistent with the rest of this
-  codebase not guessing device capability up front) — the DEBUG panel's FPS
-  reading is the existing, already-documented way to judge whether an
-  effect combination is too heavy for a given device.
-
-### GhostEffect (`effects/GhostEffect.ts`)
-
-A translucent, glow-accented duplicate meant to read as "spectral" rather
-than the dark, grounded IndependentShadowEffect or the faithful,
-photo-booth-style CloneEffect. Unlike IndependentShadowEffect, there is no
-spring/follow physics — the ghost's pose is either the live frame or a
-single fixed historical sample (`delayMilliseconds`), which is enough to
-feel detached from time without a physics simulation, and considerably
-cheaper to compute.
-
-- **Material and readability over any background**: `Avatar` gained a
-  fourth display mode, `'ghost'`, backed by `createGhostMaterial()`
-  (`avatar/avatarGeometry.ts`) — translucent, with an emissive accent, using
-  **normal** alpha blending rather than `AdditiveBlending`. This is a
-  deliberate response to the explicit "must remain readable over bright and
-  dark backgrounds" requirement: additive blending adds light on top of
-  whatever is behind it, which reads as a strong highlight over a dark scene
-  but nearly disappears over a bright one (there's little headroom left to
-  add to). Normal blending's opacity-based compositing keeps the
-  silhouette's visibility consistent regardless of background brightness —
-  confirmed visually by rendering the same pose against both a pure-white
-  and a near-black clear color (see TESTING.md). The "additive/emissive
-  accent" look is instead produced by driving the material's
-  `emissiveIntensity` (via the new `Avatar.setGlowIntensity()`, scaled by
-  `glowStrength`) rather than by changing the GPU blend mode.
-- **Delayed pose**: `GhostEffect` owns a private `TrackingHistory` (same
-  pattern as `IndependentShadowEffect` and `CloneEffect` — effects that need
-  history own their own instance). When `delayMilliseconds > 0`, the ghost's
-  frame is `copyTrackingFrame()`'d from `history.getAtOffset(delayMilliseconds)`
-  instead of the live frame; at `0` (its default-adjacent, "optional" state)
-  it reads the live frame directly. No spring — a direct copy, like
-  CloneEffect's DELAYED mode, since the ghost isn't meant to visibly *chase*
-  a target the way the shadow does.
-- **Breathing and drift**: both are deterministic sinusoids over an
-  effect-owned elapsed-time accumulator (`elapsedSeconds`, advanced only
-  while a body is tracked) — never `Math.random()`. Breathing scales the
-  whole ghost avatar's root uniformly (`Avatar.setScale()`) by a few percent
-  around 1; vertical drift offsets the root's Y (`Avatar.setPosition()`) by
-  a small fraction of the tracked `bodyScale`, on a different frequency and
-  phase than breathing so the two don't visually sync into one obvious
-  pulse. Both are small enough to read as "alive," not as a distracting
-  animation — see the "do not make it visually noisy" requirement.
-- **Trail**: a fixed number of trail "steps" (`TRAIL_STEP_COUNT = 3`), each
-  echoing a handful of extremity joints (nose, both wrists, both ankles —
-  the joints where a trail actually reads, unlike a core joint like the
-  hips) from `history.getAtOffset()` at increasing lookback, with opacity
-  and size fading further back in the lineup. `trailEnabled` (the UI
-  toggle) hides every step outright; `trailStrength` (0..1, not currently a
-  UI slider — configurable via `configure()` like CloneEffect's
-  `spreadDistance`) scales each step's opacity/size continuously. Each
-  step's joints are drawn as ONE `InstancedMesh` (not one `Mesh` per joint)
-  — see Performance below for why.
-- **Independent transform root, own material set**: the ghost's `Avatar` is
-  a fully separate instance from the live avatar (its own root, its own
-  ghost material), exactly like every other effect in this codebase — no
-  effect ever mutates the live avatar's own state.
-
-#### Performance considerations
-
-- **No post-processing**: the "glow" is entirely a material property
-  (`emissiveIntensity`), not a render-target bloom/blur pass. This was a
-  deliberate choice per the explicit "avoid heavy post-processing if it
-  causes mobile performance issues" requirement — a bloom pass costs at
-  least one extra full-screen render target and blur pass every frame
-  regardless of scene complexity, which is a poor tradeoff for a subtle
-  accent glow on a small part of the frame.
-- **Trail draw-call optimization (measured, not guessed)**: the first
-  implementation rendered each trail-echo joint as its own `Mesh` (5 joints
-  × 3 steps = 15 extra draw calls). A CPU-throttled (6x, via Chrome DevTools
-  Protocol's `Emulation.setCPUThrottlingRate`) synthetic benchmark showed
-  Ghost (glow + trail enabled) costing roughly 3x the base avatar's own
-  per-frame render time — high enough to be worth optimizing before calling
-  the effect "done." Rewriting the trail as one `InstancedMesh` per step
-  (covering all 5 joints in a single draw call, 3 draws total instead of
-  15) cut the effect's total draw calls from 48 to 36 for the same visual
-  output (confirmed via a pixel-identical scripted render before/after) and
-  measurably reduced per-frame cost in the same benchmark. This is the same
-  instancing technique `Avatar`'s own skeleton-mode joint markers already
-  use.
-- **Draw-call budget**: with Ghost enabled, the scene renders the live
-  avatar (~17 draws), the ghost avatar (~17 draws, same geometry budget),
-  and up to 3 trail `InstancedMesh` draws (only the steps with enough
-  history to show) — about 34-37 draws total, comparable to
-  IndependentShadowEffect (~19) or a 2-clone CloneEffect (~34). Disabling
-  `trailEnabled` removes the 3 trail draws entirely at no cost (the meshes
-  are simply hidden, never destroyed).
-- **No per-frame allocation**: the ghost `Avatar`, its `TrackingHistory`,
-  and all `InstancedMesh`/material trail state are created exactly once, in
-  the constructor; `update()` only mutates existing transforms and
-  material properties (opacity, emissiveIntensity, per-instance matrices).
-- **Mobile guidance**: on a device where the DEBUG panel's FPS reading drops
-  with Ghost enabled, turning `trailEnabled` off is the cheapest single
-  lever (removes the 3 trail draw calls and their per-joint matrix updates
-  entirely) before reaching for a lower `glowStrength` or disabling Ghost
-  altogether — glow strength only affects a material property, not draw
-  calls, so it has no measurable performance cost on its own.
-
-### ReverseEffect (`effects/ReverseEffect.ts`, `effects/reverseTransforms.ts`)
-
-"The Phantom responds differently from the user" — a second `Avatar` (plain
-`'mannequin'` mode, offset a small fixed amount from the live avatar so the
-two never fully overlap) driven by one of three presets, each built from
-three small, pure, deterministic transform functions kept in their own
-module (`reverseTransforms.ts`, the same separation-of-concerns pattern as
-`avatar/limbMath.ts` next to `Avatar.ts`):
-
-- **`transformPosition(out, position, mirrorX)`** — reflects a joint across
-  a vertical mirror plane at `mirrorX`. Only X changes; it's a pure
-  reflection (an isometry), so reflecting every joint of a body about the
-  *same* plane preserves every limb length and body proportion exactly —
-  the mirrored figure is never stretched or distorted, whatever pose it's
-  copying.
-- **`transformRotation(rotation)`** — reflects a yaw angle (the same
-  `atan2(dz, dx)` convention as `TrackingFrame.torsoRotation`) the way
-  `transformPosition` reflects a coordinate, via `atan2` of the reflected
-  direction vector (not a plain subtraction) so it stays correctly wrapped
-  for every input angle.
-- **`transformLimbMotion(out, jointPosition, anchorPosition)`** — inverts
-  only the horizontal component of a joint's displacement from a fixed
-  anchor (e.g. a wrist from its shoulder). Negating one vector component
-  never changes the vector's magnitude, so the anchor-to-joint distance
-  (reach/limb length) is preserved exactly — this can never stretch a limb
-  or produce `NaN`, even when the joint sits exactly on its anchor.
-
-All three are pure functions with no effect state, no Three.js scene
-access, and — per the explicit "do not make the behavior mathematically
-chaotic" requirement — no randomness of any kind; each is independently
-unit-tested (reflection involution, rotation wraparound/involution,
-displacement-magnitude preservation) in `reverseTransforms.test.ts`.
-
-**Presets** (`ReversePreset`), each mapped to a distinct combination of the
-above rather than its own bespoke math:
-
-- **MIRROR** — `transformPosition()` applied to *every* joint about the
-  source frame's own `bodyCenter.x`, producing a full, rigid mirror-image
-  duplicate. Because reflecting a body about its own centerline leaves that
-  centerline fixed, the reported `torsoRotation` is explicitly re-derived
-  via `transformRotation()` afterward so it stays consistent with the
-  mirrored joint positions (see the class doc for why this is applied to
-  the frame's data rather than via `Avatar.setRotation()`'s root-level
-  Euler override — `Avatar` positions every limb with absolute scene
-  coordinates, so rotating the root would swing the whole body through a
-  wide arc around the world origin instead of spinning it in place, which
-  would look broken for anything but a very small angle).
-- **REVERSE_HORIZONTAL** — the literal "move a hand outward, the phantom
-  moves the same hand inward" behavior. Core joints (nose, shoulders, hips)
-  are copied through unchanged — the phantom's stance and turning still
-  read as faithful to the user — while each limb extremity
-  (elbow/wrist/index finger; knee/ankle/foot-index) is passed through
-  `transformLimbMotion()` relative to its own shoulder/hip anchor
-  (`LIMB_ANCHORS`). This deliberately does *not* touch `torsoRotation` —
-  body turning passes straight through, only the limbs respond differently
-  — see TESTING.md's "body rotation" case for this preset.
-- **DELAYED_MIRROR** — exactly the MIRROR transform, just sourced from
-  `history.getAtOffset(DELAYED_MIRROR_DELAY_MS)` (the effect's own private
-  `TrackingHistory`, same "effects that need history own their instance"
-  pattern as every other effect here) instead of the live frame — the
-  "optional delayed response." The delay is a fixed internal constant, not
-  a UI-exposed slider, matching how `CloneEffect`'s `BASE_SPACING` and
-  `GhostEffect`'s breathing constants are also fixed, non-UI knobs baked
-  into a preset rather than a general-purpose parameter.
-
-**Preview label**: `getPreviewLabel()` returns a short, human string for
-the active preset ("Mirror" / "Reverse Horizontal" / "Delayed Mirror"),
-which the REVERSE panel displays directly and `App.ts` also folds into the
-DEBUG panel's "Effect" row (`Reverse (<label>)`) — the same one-directional
-"App queries the effect, UI just reflects it" flow used for Clone's
-`Clone (<mode> x<count>)` label.
-
-**A cross-cutting bug found and fixed during this effect's tests**: writing
-`ReverseEffect`'s lifecycle tests surfaced that `enable()` on
-`IndependentShadowEffect`, `CloneEffect`, and `GhostEffect` (and the first
-draft of `ReverseEffect` itself) never undid `disable()`'s
-`avatar.setVisible(false)` — `Avatar.updateFromTracking()` only *reads* the
-visibility override, it never resets it, so a real disable-then-re-enable
-UI cycle (exactly what tapping a toggle button off and back on does) would
-leave that effect permanently invisible for the rest of the session. Fixed
-by having each `enable()` call `setVisible(true)` on its own avatar(s) (all
-pool slots, for `CloneEffect`) before the first `update()` re-derives the
-correct per-slot visibility. Covered by a new regression test in each of
-the four effects' suites.
+All four effects share one fixed cross-cutting behavior: `enable()`
+restores visibility that `disable()` turned off, so a toggle-off-then-on
+cycle doesn't leave an effect permanently invisible.
 
 ## Recording (`recording/RecordingManager.ts`)
 
-Lets the user save a short local video of the camera scene with whatever
-effect is currently visible — entirely on-device, nothing ever uploaded.
+Records the composed camera + Three.js output entirely on-device. Since
+neither `videoElement.captureStream()` alone (misses the 3D effect) nor
+`sceneCanvas.captureStream()` alone (transparent, misses the camera image)
+captures what the user actually sees, and browsers have no API to merge two
+independent capture streams, `RecordingManager` composites every rendered
+frame into a private, off-DOM 2D canvas — camera frame first (cropped/
+mirrored to match what's displayed, reusing the same `computeCoverCrop()`
+and `cameraMirrored` used by tracking), then the transparent scene canvas
+on top — and records *that* composite canvas via
+`HTMLCanvasElement.captureStream()` into a native `MediaRecorder`. This is
+real browser-native video encoding, not a JS/WASM software encoder.
 
-**Why compositing is unavoidable, not just a fallback**: what the user sees
-is never one element. The live `<video>` is CSS-mirrored/cropped
-(`object-fit: cover`), and `#scene-canvas` is a *separate*, deliberately
-transparent WebGL canvas layered on top by the page (see the mirroring
-note above). `videoElement.captureStream()` alone would miss the 3D effect
-entirely; `sceneCanvas.captureStream()` alone would capture only a
-transparent overlay with no camera image. Browsers also have no API to
-merge two independent `MediaStream`s into one recorded frame — there is no
-"direct capture of both" path to prefer over compositing here, today. So
-`RecordingManager` always composites: a private, off-DOM 2D `<canvas>` is
-redrawn every rendered frame —
+Typed `RecordingError`s cover unsupported browsers, an inactive camera, a
+zero-size canvas, and WebGL context loss. `retake()`/`reset()` guard
+against a race where the recorder's async `onstop` callback could
+resurrect a discarded recording after the UI had already moved on.
+`discardRecording()` revokes the previous preview's object URL before
+creating a new one, and `dispose()` also removes its own
+`webglcontextlost` listener — nothing here leaks across repeated record/
+retake cycles. See PRIVACY.md for what happens to a recorded clip.
 
-```
-camera <video> frame (cropped + mirrored to match what's on screen)
-                            +
-transparent #scene-canvas (the just-rendered Three.js output)
-                            v
-                  composite 2D <canvas>
-                            v
-         composite.captureStream(30) -> MediaRecorder
-```
+## Rendering (`rendering/SceneManager.ts`)
 
-— and *that* composite canvas feeds a native `MediaRecorder` via
-`HTMLCanvasElement.captureStream()`. This is the "browser-native recording
-pipeline" this module prefers, in the sense that matters: real, hardware-
-backed encoding through `MediaRecorder`, never a JS/WASM software encoder.
+Owns the Three.js scene, camera, renderer, lighting, virtual floor, and the
+render/animation loop, rendered on a transparent canvas layered over the
+camera `<video>`. Resizes via a `ResizeObserver` on its actual container
+(not `window`), clamping device pixel ratio to 2 to bound GPU cost on
+high-DPI displays. `start()` guards against double-starting the render
+loop; `onFrame`/`onAfterRender` are two deliberately separate hook points
+(see "Data flow" above) so effects update the scene graph in time to be
+rendered the same frame, while consumers needing the just-rendered pixel
+buffer (recording) use the after-render hook instead.
 
-- **Frame timing correctness**: `SceneManager.onFrame()` listeners (used by
-  every effect) run *before* `renderer.render()` for that tick — on
-  purpose, so effects can update the scene graph in time to be rendered
-  that same frame. Reading the canvas from an `onFrame` listener would
-  therefore capture the *previous* frame's pixels. `SceneManager` gained a
-  second, purely additive hook, `onAfterRender()`, firing immediately after
-  `render()`, which `RecordingManager` uses instead — the only reason this
-  hook exists.
-- **Crop/mirror reuse**: the composite draw reuses `utils/math.ts`'s
-  existing `computeCoverCrop()` (the same function `CoordinateMapper`
-  already uses to keep the skeleton aligned with the displayed video) to
-  crop the source video frame identically to what `object-fit: cover`
-  shows on screen, then applies the same horizontal flip as `#camera-video`'s
-  CSS `scaleX(-1)` manually (`drawImage()` always draws a video's raw,
-  unmirrored pixels regardless of any CSS transform on the element, so the
-  mirror has to be reproduced in the 2D context). `cameraMirrored` is
-  passed into `start()` from `App.ts`'s existing single source of truth
-  (the same boolean already fed to `TrackingManager.setCameraMirrored()`
-  and `CameraScreen.setMirrored()`) rather than recomputed — one flag,
-  three consumers, never allowed to disagree.
-- **Support detection**: `isSupported()` checks for
-  `HTMLCanvasElement.prototype.captureStream` and a `MediaRecorder`-
-  supported mime type (`MediaRecorder.isTypeSupported()`, checked against a
-  preference list — VP9-in-WebM, then VP8-in-WebM, then plain WebM, then
-  `video/mp4` for Safari) once at construction. The UI hides the RECORD
-  button entirely and shows a short note instead when this is false,
-  rather than letting the user tap a control that can only fail.
-- **No microphone, ever**: `RecordingManager` never calls `getUserMedia`
-  itself — it only reads the already-active camera `<video>` element and
-  `canvas.captureStream()`, neither of which needs (or triggers) any
-  browser permission prompt. There is structurally no code path here that
-  could request microphone access.
-- **Typed errors** (`types/recording.ts: RecordingError`, following the
-  exact `CameraError`/`VisionError` pattern): pre-flight failures —
-  `unsupported`, `camera-unavailable` (the camera video has no current
-  frame — e.g. called before the camera finished starting), `zero-size-canvas`
-  (the scene canvas has no visible pixels yet, e.g. mid-layout) —
-  are thrown synchronously from `start()`, exactly like
-  `CameraController.start()` throwing `CameraError`. Failures that can only
-  happen *after* `start()` has already returned — a `MediaRecorder` runtime
-  error, or losing the WebGL context mid-recording (`context-lost`, via a
-  `webglcontextlost` listener `RecordingManager` adds directly to the scene
-  canvas, independent of `SceneManager`'s own listener on the same
-  element) — are reported through an `onError` callback instead, since
-  there's no caller left to throw to.
-- **State machine** (`RecordingState`): `'idle' -> 'recording' -> 'stopped'`,
-  with `retake()` returning `'stopped' -> 'idle'` and starting a new
-  recording implicitly discarding whatever was previously `'stopped'`.
-  `reset()` (called from `App.exitCamera()`, matching every effect's own
-  `reset()`) can be invoked mid-recording — a `discardOnStop` flag ensures
-  the recorder's asynchronous `onstop` (which fires *after* `reset()` has
-  already synchronously moved the state back to `'idle'`) discards its
-  result instead of resurrecting a `'stopped'` state and leaking an object
-  URL nobody will ever revoke. `dispose()` uses the same guard.
-- **Local-only outputs, explicitly released**: the only outputs are an
-  in-memory `Blob` and a `URL.createObjectURL()` object URL for local
-  `<video>` preview/download — never anything sent over the network. The
-  object URL is revoked (`URL.revokeObjectURL()`) on `retake()`, at the
-  start of every new recording, and in `dispose()`, so a session that
-  records several times never accumulates unreleased blob URLs.
-- **Download**: a plain `<a download>` anchor, clicked programmatically —
-  the standard, broadly-supported local-save mechanism, requiring no extra
-  permission and no heavier API (like File System Access, which Safari
-  doesn't implement).
-- **No per-frame allocation beyond the unavoidable**: the composite canvas,
-  its 2D context, and the `webglcontextlost` listener are all created once,
-  in the constructor. Each `onAfterRender` tick only calls `drawImage()`
-  twice and, once per finished take, allocates one `Blob` — there is no
-  steady-state growth from repeated start/stop cycles.
-- **Default frame rate**: `captureStream(30)` — a reasonable default for a
-  short clip; not currently exposed as a setting (no requirement asked for
-  one).
+**WebGL context loss**: both `webglcontextlost` and `webglcontextrestored`
+are handled. On loss, the render loop stops (and `event.preventDefault()`
+is called, per the WebGL spec, to allow restoration at all). On restore,
+rendering resumes automatically — but only if the loop was actually
+running at the moment of loss, so a context event that fires after the
+user has already left the camera screen doesn't resurrect a loop nobody
+asked for.
 
-## UI / design system (`ui/`)
+## UI (`ui/CameraScreen.ts`, `ui/LandingScreen.ts`, `ui/styles.css`)
 
-A visual and structural pass over `index.html`/`styles.css`/`CameraScreen.ts`/
-`LandingScreen.ts` — presentation only. Nothing here touches `App.ts`'s
-orchestration logic, any effect, `RecordingManager`, or the tracking/
-rendering pipeline; `CameraScreenCallbacks`' existing methods keep their
-exact signatures (only one new callback, `onCameraSwitch`, was added — see
-below), so every effect/recording control still calls the same App.ts
-methods it always did, just from a reorganized DOM.
+Owns the DOM only — every user action is reported to `App` via a callbacks
+object; `CameraScreen`/`LandingScreen` hold no tracking, effect, or
+recording logic themselves. Camera screen structure: a top HUD (brand +
+live status pill — the first user-facing "tracking lost" indicator), a
+persistent effect rail (SHADOW/CLONE/GHOST/REVERSE, plus a genuinely
+`disabled` DELAY chip — listed honestly, not faked), a three-control bottom
+bar (camera-switch/RECORD/settings), and one on-demand settings drawer
+(native `<details>`/`<summary>` sections) rather than several always-on
+floating panels. A generic, auto-dismissing inline `showNote()` toast
+handles non-fatal failures (a failed camera switch, a recording error) —
+never a native `alert()`. Global `:focus-visible` styling, `aria-label`s on
+every icon button, `role="status"`/`role="alert"` on live regions, 44px-
+minimum touch targets, and `env(safe-area-inset-*)` on every edge
+(including left/right for landscape) are applied throughout.
 
-**Layout**: the camera screen is now three fixed regions instead of
-scattered per-effect panels at ad hoc absolute offsets:
+**Developer/debug mode** (`utils/debugMode.ts`): a boolean flag, set via
+`?debug=1` in the URL and persisted to `localStorage`, gates the settings
+panel's "Display" section — live FPS/vision/tracking-state/confidence/
+landmark-count/inference-time/mirroring diagnostics, and the wireframe
+`DebugSkeleton` overlay toggle. These are diagnostic tools, not
+production-facing features, so they're hidden by default; the flag changes
+nothing else about the app's behavior. See README.md for the user-facing
+documentation of the flag.
 
-- `<header class="hud-top">` — back button, the `PHANTOM` wordmark, and a
-  live status pill (see below). Exactly the two things asked for (brand +
-  status), plus the back control the app still needs to navigate.
-- `<nav class="effect-rail">` — one persistent row of toggle chips (SHADOW/
-  CLONE/GHOST/REVERSE, plus a genuinely `disabled` DELAY chip — see below),
-  horizontally scrollable so it never needs to wrap or shrink chips below
-  their touch-target size on a narrow phone.
-- `<footer class="hud-bottom">` — camera-switch, RECORD, and settings,
-  three fixed icon-sized controls plus one large record button, matching
-  the requested bottom-bar contents exactly.
+## Error handling model
 
-Every one of these is a slim, translucent (`backdrop-filter: blur()`) bar
-rather than an opaque block, and the effect-specific parameter controls
-(Clone's count/mode, Ghost's sliders, Reverse's mode, Shadow's sensitivity)
-that used to live in three separate always-visible floating panels are now
-inside one on-demand settings drawer (below) — so nothing sits permanently
-on top of the camera feed except two thin bars and a chip row, directly
-serving "do not cover too much of the camera feed."
+Every module that can fail in a well-understood way throws (or reports via
+callback) a typed error with a `type` discriminant: `CameraError`,
+`VisionError`, `RecordingError`. `App.describeError()`/
+`describeRecordingError()` are the single place these are translated into
+user-facing copy — no module below `App` ever constructs user-facing
+strings itself. Fatal failures (can't enter the camera experience at all)
+show a full-screen error overlay with RETRY/BACK; non-fatal failures (a
+failed camera switch that successfully fell back, a recording error) show
+the auto-dismissing toast instead, so a transient problem doesn't need a
+full-screen interruption to recover from.
 
-**Settings drawer**: a bottom sheet (`#settings-panel`), opened by the
-gear-ish control in the bottom bar, holding a `<details>`/`<summary>` per
-section (Display, Shadow, Clone, Ghost, Reverse) — a deliberate semantic-
-HTML choice: `<details>` is a native, keyboard-operable disclosure widget,
-so each section expands/collapses with zero JavaScript and is reachable by
-Tab/Enter without any custom ARIA `expanded` bookkeeping. The drawer itself
-still needs a little JS for its own open/close lifecycle (not something
-`<details>` provides): opening it moves focus to its close button and
-starts listening for `Escape`; closing it (via the close button, the
-scrim, or `Escape`) removes that listener and returns focus to the gear
-button that opened it — a minimal, hand-rolled modal-focus treatment
-(match, not a full focus trap) appropriate for a panel with only a handful
-of controls. The `<video>`/`<canvas>` behind it are unaffected — this is
-the same "on-demand, not permanent" screen real estate principle as the
-effect rail.
+## What is never torn down (and why that's intentional)
 
-**Status indicator (the first-class "tracking lost" state)**: previously,
-tracking state was only visible inside the opt-in DEBUG panel. It's now
-also a small top-bar pill, always present, derived from the exact same
-`DebugStats` object `App.ts` was already computing and passing to
-`updateDebugStats()` every frame — no new data plumbing was needed.
-`CameraScreen` maps `TrackingState` to one of four short labels/tones:
-`TRACKING` → "LIVE" (accent dot), `LOST` → "NO BODY" (red dot),
-`INITIALIZING`/`RECOVERING` → "SEARCHING" (pulsing amber dot), and the
-detection-failure case → "ERROR" (red dot). The detailed stats rows
-(FPS, confidence, the mirroring diagnostic, etc.) still exist, now inside
-the settings drawer's "Display" section, and are updated unconditionally
-on every call — the old `if (!this.debugVisible) return` early-return was
-removed, since a `<details>` section costs nothing to keep current even
-while collapsed (a handful of `textContent` writes at a few dozen Hz is
-free), which also simplified `CameraScreen` by deleting a manual
-visibility-gate boolean.
+`SceneManager`, `PoseVision`, `RecordingManager`, `DebugSkeleton`, and every
+effect are constructed once, in `App`'s constructor, and live for the
+whole page session — `App.exitCamera()` calls each one's `reset()` (return
+to a clean, hidden, default-parameter state) but never `dispose()`
+(release underlying GPU/WASM resources permanently). This is deliberate:
+re-entering the camera screen should not have to re-download or re-
+initialize the pose model, recreate the WebGL renderer, or rebuild every
+effect's geometry — those are the genuinely expensive one-time costs, and
+the whole point of `reset()` existing separately from `dispose()` is to
+make repeated enter/exit cycles cheap. Each class's `dispose()` method
+still exists and is exercised by its own unit tests, for the (currently
+unused) case of a future full application teardown. The one thing that
+*is* always fully released on every exit is the camera stream itself
+(`CameraController.stop()`), since holding a live camera stream while the
+user isn't even looking at the camera screen would be a real, user-visible
+problem (the OS camera indicator staying lit) — not just an internal
+efficiency question.
 
-**Camera switch — wiring an existing capability, not a new one**:
-`CameraController.switchFacing()` and `.getStatus().canSwitchFacing`
-already existed (built for a future "no UI trigger yet" gap noted in
-TODO.md) but had no UI. `App.switchCamera()` calls the former and re-runs
-the same mirroring/aspect recomputation `enterCamera()` already does after
-a facing change; the button itself stays hidden until `enterCamera()`
-confirms (via `canSwitchFacing`) that the device actually has more than
-one camera, and is disabled for the duration of an in-flight switch to
-prevent overlapping calls. No new camera/tracking logic was written — this
-is exactly "complete a documented UI gap with an already-built capability,"
-not new architecture.
+## Known architectural limitations
 
-**DELAY — listed, not faked**: the effect rail includes a fifth chip for
-the not-yet-implemented Delay effect, matching the requested effect list,
-but it's a real, natively `disabled` `<button>` with a "SOON" badge and an
-accessible label saying so — never a control that looks interactive but
-silently does nothing. `TODO.md` already tracks `DelayEffect` as future
-work; this UI change doesn't build it, only acknowledges it honestly.
-
-**Unsupported-device state, made proactive**: `isWebGLAvailable()` and a
-`navigator.mediaDevices?.getUserMedia` check (both already-cheap,
-side-effect-free capability checks) now run once at `App` construction,
-before the user ever taps ENTER CAMERA. If either is missing,
-`LandingScreen.setUnsupported()` disables the button and shows an inline
-note in place of it — turning what used to be "tap the button, wait, then
-see a full-screen error" into "the button already tells you it won't
-work." The existing overlay-based error path (`CameraScreen.showError()`,
-covering camera permission/not-found/in-use, insecure context, and a
-mid-session WebGL failure) is unchanged and still the fallback for
-anything not caught by the proactive check.
-
-**Non-fatal messaging (`CameraScreen.showNote()`)**: a single, generic,
-auto-dismissing inline toast (never a native `alert()`/`confirm()`)
-used for anything that shouldn't interrupt the rest of the camera
-experience the way a fatal camera/vision error does — a recording
-pre-flight failure, an async recording error, or a failed camera switch.
-This replaces what was a recording-only `showRecordingError()` method;
-generalizing it was a small, low-risk rename since it had exactly one
-concern (show text, auto-hide) that a second caller now shares.
-
-**Accessibility**:
-- A single `:focus-visible` rule (accent-colored outline) is defined once,
-  globally, rather than per component — every button, slider, and link in
-  the app gets a visible keyboard-focus indicator that also matches the
-  design language, since the dark glass surfaces throughout this UI would
-  otherwise make browsers' default focus rings hard to see or invisible.
-  It only ever shows for keyboard/programmatic focus, never mouse/touch
-  activation (that's what `:focus-visible` is for).
-- Every interactive control is a real `<button>` or `<input>` (never a
-  `<div onclick>`), so Tab order, Enter/Space activation, and disabled
-  semantics all come from the browser for free — confirmed by scripted
-  Tab-sequence traversal (see TESTING.md).
-- Live/transient regions (`status-indicator`, `record-indicator`, the
-  loading overlay, error overlays, the toast note) carry `role="status"`/
-  `role="alert"`/`aria-live="polite"` as appropriate, so assistive tech
-  hears state changes without needing to poll the screen.
-- Icon-only buttons (back, camera-switch, settings, settings-close) all
-  have an explicit `aria-label`; their inline SVGs are `aria-hidden`.
-- Touch targets: every tappable control in the redesigned bottom bar,
-  effect rail, and settings drawer is at least 44px in its smallest
-  dimension (WCAG's minimum), confirmed via measured bounding boxes in the
-  scripted browser check, not just eyeballed in CSS.
-- Safe-area insets (`env(safe-area-inset-*)`) are applied to the top
-  header, bottom bar, effect rail, settings drawer, and every full-screen
-  overlay — not just top/bottom as before, but left/right too, since a
-  landscape-oriented notched phone needs those as well.
-
-**Copy**: the landing tagline and button text match the requested copy
-exactly ("MAKE THE IMPOSSIBLE APPEAR." / "ENTER CAMERA"); the "How it
-works" panel explicitly states every effect is a visual illusion, not
-anything physically real; a small "Processing happens locally on this
-device." caption appears on both the landing screen and inside the
-settings drawer.
+See [QA_REPORT.md](./QA_REPORT.md#known-limitations) for the current list
+(e.g. MediaPipe and Three.js are loaded eagerly at page load rather than
+lazily on first camera entry, which is the main lever left for reducing
+landing-page bundle weight on slow mobile connections).

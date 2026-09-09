@@ -1,355 +1,407 @@
-# PHANTOM — QA & Performance Audit Report
+# QA Report — Production-Readiness Pass
 
-**Scope:** full-codebase audit against the categories and test scenarios below.
-No new features were added — every change is a bug fix or hardening of
-existing behavior. All fixes are on `claude/project-requirements-review-p93qwl`.
+PHANTOM is feature-complete for its first public prototype (camera capture,
+on-device pose tracking, the procedural avatar, all four effects, and local
+recording). This report covers the production-readiness pass performed on
+top of that: repository cleanliness, dead code/dependency removal, hiding
+debug tooling from normal use, resource-cleanup verification, privacy/
+secrets verification, and build/test/runtime verification. It supersedes
+the previous QA_REPORT.md, whose findings (a camera/vision race condition
+and related hardening) are summarized under "Prior audit" below since they
+remain fixed and in effect.
 
-**Method:** every source file in `src/` was read against each bug category
-below, with the async control-flow of every camera/vision/recording call
-path traced by hand. Where the sandbox permits (no real camera or MediaPipe
-CDN access here — outbound requests to `storage.googleapis.com` /
-`cdn.jsdelivr.net` are blocked), findings were also verified live via a
-scripted Chromium session (`--use-fake-device-for-media-stream`). Findings
-that require real hardware (an actual camera driver misbehaving, real GPU
-context loss, a real MediaPipe load) are marked **verified by code trace**
-rather than **verified live**, with the reasoning for why the trace is
-conclusive spelled out per finding.
+Every item below maps to one of the 15 tasks in the production-readiness
+request. Each states what was checked, what (if anything) was changed, and
+how it was verified.
 
----
+## Prior audit (already fixed, summarized)
 
-## Findings
+An earlier QA pass found and fixed a critical bug: `App.enterCamera()` had
+no reentrancy guard, so a double-tap on ENTER CAMERA (or rapid RETRY
+clicks) could race two concurrent camera-start and pose-model-load
+attempts, leaking whichever one lost the race. That pass also fixed a
+failed camera switch leaving the camera fully stopped with a misleading
+toast, an unbounded hang if the camera stream never became ready, and
+unrecoverable WebGL context loss. All four fixes remain in place and were
+re-verified (still passing `tsc`/`vitest`/`build`, still no console errors
+under the same scripted double-click/repeated-cycle/resize tests) as part
+of this pass. Full original detail is preserved in git history; this
+report focuses on what's new in the production-readiness pass.
 
-### 1. Camera stream leak + pose-model load race on overlapping `enterCamera()` calls
+## 1. Clean the repository
 
-- **Severity:** Critical
-- **Cause:** `App.enterCamera()` had no reentrancy guard. It checked
-  `camera.isActive()` / `poseVision.isReady()` and, if either was false,
-  called `camera.start()` / `poseVision.init()` — but a second call arriving
-  before the first resolved (a double-tap on **ENTER CAMERA**, or rapid
-  clicks on the error overlay's **RETRY** while a previous attempt was still
-  loading) would see the same "not active / not ready" state and kick off a
-  **second**, fully independent `getUserMedia()` call and a **second**,
-  fully independent MediaPipe `PoseLandmarker` load, concurrently with the
-  first. Whichever attempt's promise resolved last silently overwrote
-  `CameraController.stream` / `PoseVision.landmarker` — the loser's
-  `MediaStream` tracks were never `.stop()`'d (camera hardware held forever,
-  the OS camera indicator staying lit) and its `PoseLandmarker` was never
-  `.close()`'d (a second WASM/GPU model instance resident in memory for the
-  rest of the session). This directly matches the **camera stream leaks**
-  and **model loading race conditions** categories, and is triggerable via
-  test scenarios **#5** (permission granted then stopped, if the user
-  double-taps), **#9/#10** (rapid RETRY while a slow model load is in
-  flight), and **#16** (repeated camera start/stop cycles).
-- **Fix:**
-  - `App.ts`: `enterCamera()` is now a thin guard around a new
-    `doEnterCamera()` — a second call while one is in flight returns the
-    *same* promise instead of re-running the body at all
-    (`enteringCameraPromise`).
-  - `PoseVision.init()` and `CameraController.start()` were each also given
-    their own internal in-flight guard (`initPromise` / `startPromise`), so
-    concurrent calls from *any* caller — not just this one call site — share
-    one attempt instead of racing. This is defense-in-depth: it makes both
-    classes correct on their own terms, independent of caller discipline.
-- **Verification:** verified live — a scripted double-click on **ENTER
-  CAMERA** (Playwright, fake camera device) produces exactly one
-  camera/vision attempt with no uncaught exceptions or unhandled promise
-  rejections (checked via `page.on('pageerror')`). The leak itself (two
-  independent `MediaStream`s / `PoseLandmarker`s) cannot be directly
-  observed without a real camera + reachable MediaPipe CDN, both unavailable
-  in this sandbox, but the fix is structural: with the guard in place there
-  is no code path left that can start a second concurrent attempt, so the
-  leak is eliminated by construction, not by making it less likely.
-  `tsc --noEmit`, `vitest run` (122/122), and `npm run build` all pass
-  after the change.
+- Removed `TODO.md`, a chronological, phase-by-phase build log left over
+  from initial development. Its one still-relevant section ("Not yet
+  implemented") is folded into "Known Limitations" below; the rest was a
+  build diary that had already been superseded by ARCHITECTURE.md's
+  current-state module documentation.
+- Rewrote `ARCHITECTURE.md` and `TESTING.md` from phase-narrated build logs
+  ("What was verified for Ghost (this phase)", repeated per feature added
+  over time) into clean, current-state reference documents describing the
+  app as it exists now, not the order it was built in.
+- Removed a stray, git-ignored `dist/` directory left over from a previous
+  manual build (it was never tracked by git — confirmed via
+  `git check-ignore -v dist` — so this is a local-workspace cleanup, not a
+  repository change).
+- Verified `.gitignore` already correctly excludes `node_modules`, `dist`,
+  logs, and editor files; no changes needed there.
 
-### 2. A failed camera switch left the camera fully stopped with only a misleading toast
+## 2. Remove dead code
 
-- **Severity:** High
-- **Cause:** `CameraController.switchFacing()` called `this.start({facing:
-  next})`, and `start()` unconditionally calls `this.stop()` on the
-  *current* stream before requesting the new one. If the new facing's
-  `getUserMedia()` then failed (device has no second camera despite
-  `canSwitchFacing` reporting true, a transient driver error, the camera
-  taken by another app mid-switch), the old stream was already gone and
-  nothing tried to bring it back — the camera ended up completely off.
-  `App.switchCamera()`'s `catch` block only showed a 4-second auto-dismissing
-  toast ("Failed to switch camera"), which reads as a minor, recoverable
-  hiccup, not "the live camera view is now dead." The user was left staring
-  at a blank/frozen feed with tracking silently reporting `LOST` forever,
-  with no error overlay and no obvious way to recover short of guessing to
-  hit BACK and re-enter. Matches **camera switching bugs** directly, and is
-  test scenario **#6** (camera switched) combined with **#7** (camera
-  unavailable).
-- **Fix:**
-  - `CameraController.switchFacing()` now remembers the facing mode active
-    before the switch and, if the new facing fails to start, attempts to
-    restart that previous facing before rethrowing the original error — a
-    failed switch now degrades to "keeps working as it did before" instead
-    of "camera is off," in the common case where the old facing mode still
-    works.
-  - `App.switchCamera()`'s `catch` now checks `camera.isActive()` after a
-    failure: if the fallback above succeeded, the existing toast is enough
-    (the live view is fine). If both facings failed and the camera really is
-    stopped, it now escalates to the same fatal-error overlay
-    `enterCamera()` uses (`handleFatalError`), whose **RETRY** button
-    correctly restarts the camera (since `camera.isActive()` is now false,
-    `enterCamera()` calls `camera.start()` again on retry).
-- **Verification:** verified by code trace — reproducing a real second-camera
-  failure needs a device with a driver that rejects the second facing mode,
-  which isn't available in this sandbox. The trace is conclusive because the
-  fix only changes what happens after `switchFacing()` rejects (an already-
-  exercised, existing error path) and after `camera.isActive()` returns
-  false (a deterministic function of `CameraController.stream`) — both
-  branches were manually walked against the updated source. `tsc`, `vitest`,
-  and `build` all pass.
+One genuinely dead code path was found and removed: `App.ts` held its own
+`private readonly trackingHistory = new TrackingHistory()`, pushed every
+tracking frame into it (`this.trackingHistory.push(frame)` in
+`runDetection()`) and cleared it on exit, but **nothing ever read from it**
+— no `.getAtOffset()`/`.getLatest()` call existed anywhere against that
+specific instance. Each effect that actually needs historical lookback
+(`IndependentShadowEffect`, `CloneEffect`'s DELAYED mode, `GhostEffect`,
+`ReverseEffect`'s DELAYED_MIRROR) already owns and manages its own private
+`TrackingHistory`; the app-level one was write-only leftover
+infrastructure from before those effects existed. Removed the field, its
+import, and both call sites; also corrected `TrackingHistory.ts`'s own
+class doc, which still described the (now-removed) app-level instance as
+the way this class gets exercised.
 
-### 3. `waitForVideoReady()` could hang forever, freezing the app on the loading screen
+No other dead exports, unused files, or unreachable branches were found —
+checked by cross-referencing every top-level `export` in `src/` (via
+`grep -rn "^export "`) against its usages elsewhere in the codebase and in
+tests; everything else exported is consumed by production code, tests, or
+both.
 
-- **Severity:** Medium
-- **Cause:** After `getUserMedia()` and `video.play()` succeeded,
-  `CameraController.start()` awaited `waitForVideoReady()`, which resolved
-  only on the video element's `loadedmetadata` event — with no timeout. A
-  stream that is granted but never actually delivers a frame (a real,
-  documented device/driver failure mode, and one shape of test scenario
-  **#7**, "camera unavailable") left this promise pending indefinitely,
-  which in turn left `enterCamera()`'s `await Promise.all(...)` pending
-  forever: the user would be stuck on the loading spinner permanently, with
-  no error, no timeout, and no way out except reloading the page.
-- **Fix:** `waitForVideoReady()` now races the `loadedmetadata` listener
-  against a 10-second timeout; on timeout it rejects with a `CameraError`
-  (cleaning up the listener either way), which `start()` now catches to
-  `stop()` the half-opened stream before rethrowing — so a stuck stream now
-  surfaces as a normal, actionable error instead of an infinite spinner.
-- **Verification:** verified by code trace (this failure mode needs a real
-  camera stream that grants permission but never emits `loadedmetadata`,
-  which cannot be simulated with Chromium's fake-device flag — the fake
-  device does emit metadata normally). The fix is a bounded, deterministic
-  timeout with a single rejection path, verified by inspection to always
-  settle and to always clean up both the listener and the pending timer.
-  `tsc`, `vitest`, and `build` all pass.
+**Note on `dispose()` methods**: `SceneManager.dispose()`,
+`PoseVision.dispose()`, `RecordingManager.dispose()`,
+`DebugSkeleton.dispose()`, `Avatar.dispose()`, and each effect's
+`dispose()` are never called by the running app today. This is
+**intentional, not dead code** — see ARCHITECTURE.md's "What is never torn
+down" section for why (these are page-lifetime singletons; re-entering the
+camera screen must not re-download the pose model or rebuild the renderer).
+Each `dispose()` is still exercised by its own unit test and remains
+available for a future full-teardown scenario, which is why they were kept
+rather than deleted.
 
-### 4. `SceneManager`'s WebGL context-loss handling was unrecoverable, and its listener couldn't be removed
+## 3. Remove unused dependencies
 
-- **Severity:** Low
-- **Cause:** Two related issues in `SceneManager`'s constructor:
-  1. The `webglcontextlost` listener was registered as an inline arrow
-     function with no stored reference, so `dispose()` had no way to ever
-     remove it — a latent event-listener leak, currently unreachable only
-     because nothing calls `dispose()` today (see the note under "Areas
-     audited, no issues found" below).
-  2. There was no `webglcontextrestored` handling at all. A context loss
-     (a real, if infrequent, occurrence — GPU driver reset, some mobile
-     browsers reclaiming GPU memory when backgrounded) called `this.stop()`
-     and stopped the render loop permanently. Even if the browser later
-     fired `webglcontextrestored` and Three.js recovered its internal GL
-     state, nothing in this codebase ever called `start()` again — the 3D
-     overlay would stay frozen/blank for the rest of the session with no
-     error shown, since `stop()` alone doesn't surface a user-facing error.
-     Matches **WebGL context issues** directly.
-- **Fix:** Both handlers are now named class fields (`handleContextLost` /
-  `handleContextRestored`) instead of anonymous closures, so `dispose()` can
-  actually remove them. A new `resumeOnContextRestore` flag records whether
-  the render loop was actually running at the moment the context was lost;
-  `handleContextRestored` resumes the loop only in that case, so a context
-  loss that happens (or is restored) while the user isn't even on the camera
-  screen doesn't resurrect a loop nobody asked for.
-- **Verification:** verified by code trace — forcing a real
-  `webglcontextlost`/`webglcontextrestored` pair requires either a GPU-level
-  fault or a debug extension (`WEBGL_lose_context`) that behaves differently
-  across browsers; the logic itself (flag set exactly when the loop was
-  running, read-and-cleared exactly once on restore) was verified by
-  inspection to have no path that double-starts the loop or resumes a loop
-  the user had already stopped via `exitCamera()`. `tsc`, `vitest`, and
-  `build` all pass.
+None found. Checked two ways:
 
----
+- Manually cross-referenced every `dependencies`/`devDependencies` entry
+  in `package.json` (`@mediapipe/tasks-vision`, `three`, `@types/three`,
+  `typescript`, `vite`, `vitest`) against actual imports in `src/` — all
+  six are used.
+- Ran `npx depcheck`, which independently reported no unused dependencies
+  and no missing ones.
 
-## Areas audited, no issues found
+`package.json` is unchanged from this pass.
 
-For each bug category and test scenario in the original request, here is
-what was specifically checked and confirmed clean, beyond the four findings
-above:
+## 4. Remove debugging UI from normal production mode
 
-- **TypeScript errors:** `tsc --noEmit` is clean (strict mode, plus
-  `noUnusedLocals`/`noUnusedParameters`/`noFallthroughCasesInSwitch`/
-  `erasableSyntaxOnly`) both before and after every fix in this pass.
-- **Runtime errors / unhandled promises:** every `void this.someAsyncMethod()`
-  fire-and-forget call site (`onRetry`, `onEnterCamera`, `onCameraSwitch`)
-  routes into a method with its own top-level `try/catch` that never rethrows,
-  so none can produce an unhandled rejection. `Promise.all([cameraPromise,
-  visionPromise])` in `enterCamera()` does not create an unhandled-rejection
-  risk either: `Promise.all` attaches handlers to *every* promise passed to
-  it internally, even though it only surfaces the first rejection — a common
-  misconception worth ruling out explicitly. Verified live: the Playwright
-  smoke pass (landing screen, double-click entry, three repeated enter/exit
-  cycles, two resize events) produced zero `pageerror` events (which fire for
-  both uncaught exceptions and unhandled promise rejections) across every
-  scenario.
-- **Memory leaks / unnecessary allocations in animation loops:** `Avatar`,
-  `IndependentShadowEffect`, `CloneEffect`, `GhostEffect`, `ReverseEffect`,
-  `DebugSkeleton`, `CoordinateMapper`, `LandmarkSmoother`, and `OneEuroFilter`
-  all pre-allocate every `Vector3`/`Quaternion`/`Object3D` scratch value and
-  every geometry/material exactly once (in a constructor or module scope) and
-  only ever mutate them in `update()`/`updateFromTracking()`. `CloneEffect`
-  and the `IndependentShadowEffect`'s spring integrator use fixed-size pools
-  (5 clones max, one `Vector3` velocity per landmark) rather than allocating
-  per frame. `GhostEffect`'s motion trail renders through `InstancedMesh` (one
-  draw call per trail step covering every echoed joint) rather than one mesh
-  per joint — an already-documented, already-profiled optimization.
-  `TrackingHistory` is a true fixed-capacity ring buffer; `push()` copies into
-  an existing slot rather than allocating a new frame object.
-- **Event listener leaks:** every listener attached with an inline closure in
-  a component that's constructed once for the app's lifetime (`CameraScreen`,
-  `LandingScreen`, `App`'s own `resize` listener) is intentionally never
-  removed, since these objects are never torn down — this is a deliberate,
-  consistent single-page-app pattern, not a leak. The two listeners that
-  genuinely toggle (the settings-drawer and "how it works" panel's `Escape`
-  keydown handlers on `document`) are correctly paired: both are added on
-  open and removed on every close path, including `CameraScreen.hide()`'s
-  defensive cleanup if the drawer happened to be open when the user backs
-  out. The one real gap found (`SceneManager`'s anonymous
-  `webglcontextlost` listener) is Finding #4, fixed above.
-- **Camera stream leaks / camera switching bugs / model loading race
-  conditions:** the root cause (Finding #1) and the switch-specific failure
-  mode (Finding #2) are fixed above; no further concurrency gaps were found
-  in `CameraController` or `PoseVision` after the fix (both now serialize
-  their own concurrent callers).
-- **Resize bugs / orientation bugs:** `SceneManager` resizes via
-  `ResizeObserver` on the actual container element (not `window`), clamps
-  `devicePixelRatio` to 2, and recomputes the camera's aspect/projection
-  matrix on every resize — verified live across two simulated
-  orientation flips (844×390 ↔ 390×844) with no console errors.
-  `TrackingManager.notifyViewportChanged()` is wired to `window`'s `resize`
-  event and recomputes the `object-fit: cover` crop math independently of
-  the camera's own aspect ratio. `index.html` uses `100dvh` (not the classic
-  mobile-Safari-buggy `100vh`) plus `viewport-fit=cover`, and `styles.css`
-  applies `env(safe-area-inset-*)` on every edge — this was already fixed in
-  the prior UI-polish phase and remains correct.
-- **Mirrored-camera bugs:** the mirroring pipeline has exactly one flip point
-  (`transformLandmarkForRender`), driven by a single `cameraMirrored` boolean
-  threaded through `TrackingManager`, `CameraScreen.setMirrored` (CSS-only,
-  video element only), and `RecordingManager`'s composite draw (which
-  reproduces the same CSS flip in software, since `drawImage()` ignores CSS
-  transforms). `App.switchCamera()` correctly re-derives `cameraMirrored`
-  from the *new* facing mode after every switch, including the fallback path
-  added in Finding #2.
-- **Recording bugs:** `RecordingManager.reset()`/`dispose()`'s
-  `discardOnStop` flag correctly guards against the async `onstop` handler
-  resurrecting a discarded recording after a mid-recording reset (e.g. the
-  user backs out of the camera screen while recording). `start()` is a
-  synchronous no-op while already recording (test scenario **#15**, repeated
-  record/re-record cycles, cannot double-start). Every pre-flight failure
-  (`unsupported`, `camera-unavailable`, `zero-size-canvas`) throws
-  synchronously and is caught at the one call site in `App.ts`; every
-  post-start failure (`context-lost`, `start-failed`) reports through the
-  `onError` callback instead — no unhandled path either way.
-- **WebGL context issues:** see Finding #4. `RecordingManager` already
-  correctly stores its own `contextLostHandler` as a named field and removes
-  it in `dispose()` — it was the reference implementation this report's
-  fix for `SceneManager` was modeled on.
-- **Mobile layout problems:** see "Resize bugs / orientation bugs" above;
-  also confirmed 44px-minimum touch targets remain intact (`min-height: 44px`
-  present throughout `styles.css`) and the effect rail / bottom bar don't
-  overlap at the simulated 390×844 mobile viewport used in the live smoke
-  pass.
-- **Tracking-loss instability:** `TrackingManager`'s state machine
-  (`INITIALIZING → TRACKING → RECOVERING → LOST`, `LOSS_GRACE_MS = 600`) and
-  every effect's own "hide/freeze on `!trackingFrame.present`" branch were
-  re-checked; each effect leaves its own avatar's last pose frozen (not
-  reset) during a brief dropout so a one-frame miss doesn't visibly glitch,
-  matching test scenarios **#11/#12** (user leaves/returns frame).
-  `OneEuroFilter.reset()` is called on `LOST`/re-`INITIALIZING` but
-  deliberately not on `RECOVERING`, so a brief dropout doesn't restart the
-  smoothing filter's adaptation from cold.
-- **Performance goals:**
-  - *Stable animation loop:* `SceneManager.start()` already had (and still
-    has) a correct reentrancy guard (`if (this.rafHandle !== null) return;`)
-    — the positive counter-example that made Finding #1's missing guard in
-    `App.enterCamera()` stand out during this audit.
-  - *No obvious memory growth during long sessions:* confirmed via the
-    allocation audit above — no per-frame heap allocation was found in any
-    hot path (detection, tracking, effects, rendering, recording composite
-    draw).
-  - *Reasonable inference cadence:* `App`'s adaptive `detectIntervalMs`
-    (derived from a rolling average of actual inference duration ×
-    `DETECT_INTERVAL_SAFETY_FACTOR`, clamped to `[1000/30, 250]` ms) is
-    unchanged and unaffected by this pass's fixes — still decoupled from the
-    render loop's own frame rate.
-  - *Low unnecessary GPU work:* no additional draw calls, render targets, or
-    post-processing were introduced by any fix; `GhostEffect`'s trail
-    remains one draw call per step as already optimized.
+Before this pass, the settings panel's "Display" section — live FPS,
+vision status, tracking state, confidence, landmark count, inference time,
+active-effect summary, and a raw/render/mirrored coordinate diagnostic,
+plus a wireframe skeleton-overlay toggle — was visible to every user,
+always. None of this is a production-facing feature; it's development/QA
+tooling (the skeleton overlay was already documented elsewhere in the
+codebase as a "diagnostic overlay").
 
----
+This section (`#debug-settings-section` in `index.html`) is now hidden by
+default and only shown when developer/debug mode is enabled (see task 5).
+Effect controls (Shadow/Clone/Ghost/Reverse sections) are unaffected — they
+are real user-facing features, not debug tooling, and remain always
+visible. The settings panel's default-open section changed from "Display"
+to "Shadow" accordingly, since "Display" is now usually hidden.
 
-## Test scenario coverage
+## 5. Developer/debug mode, accessible through a documented flag
 
-| # | Scenario | Coverage |
-|---|---|---|
-| 1 | Desktop camera | Code trace + live smoke pass (fake device) |
-| 2 | Mobile front camera | Code trace + live smoke pass at mobile viewport |
-| 3 | Mobile rear camera | Code trace (facing logic identical to #2; `canSwitchFacing` requires real hardware) |
-| 4 | Permission denied | Code trace (`CameraError('permission-denied')` path, existing + unchanged) |
-| 5 | Permission granted then stopped | Code trace — Finding #1's guard directly targets this |
-| 6 | Camera switched | Code trace — Finding #2 |
-| 7 | Camera unavailable | Code trace — Finding #3 |
-| 8 | WebGL unsupported | Code trace (existing `isWebGLAvailable()` proactive check, unchanged, still correct) |
-| 9 | MediaPipe initialization failure | **Verified live** — this sandbox's blocked CDN reproduces this scenario naturally; confirmed graceful error handling with zero uncaught exceptions |
-| 10 | Model loading failure | **Verified live** (same as #9) |
-| 11 | User leaves the frame | Code trace (tracking-loss instability, above) |
-| 12 | User returns | Code trace (RECOVERING grace period, above) |
-| 13 | Effect switched during tracking | Code trace (each effect's `enable()`/`disable()` visibility symmetry, already fixed in a prior phase, re-verified intact) |
-| 14 | Recording started and stopped | Code trace (RecordingManager state machine, above) |
-| 15 | Repeated record/re-record cycles | Code trace (`start()`'s no-op guard, `discardOnStop`) |
-| 16 | Repeated camera start/stop cycles | **Verified live** (3 scripted enter/exit cycles, zero errors) |
-| 17 | Browser window resized | **Verified live** (2 scripted resize events, zero errors) |
-| 18 | Portrait/landscape changes | **Verified live** (same resize test, 844×390 ↔ 390×844) |
+Added `src/utils/debugMode.ts`: a small, dependency-free flag reader.
+Enable it by loading the app with `?debug=1` in the URL — this also
+persists the choice to `localStorage` so it survives reloads without
+keeping the query parameter; disable again with `?debug=0`. Documented in
+README.md under "Developer / debug mode" (user-facing) and
+ARCHITECTURE.md's UI section (implementation). `App.ts` reads this flag
+once at startup and passes it into `CameraScreen`'s constructor, which
+hides/shows `#debug-settings-section` accordingly — this is the flag's
+only effect; it changes no other app behavior.
 
----
+**Verified live** (scripted Chromium, see QA verification section below):
+debug mode off by default, section hidden; `?debug=1` shows it; the choice
+persists across a reload with no query parameter (via `localStorage`);
+`?debug=0` turns it back off.
 
-## Verification checklist
+## 6. Ensure production build works
 
-- [x] **Type checks:** `npx tsc --noEmit` — clean, no errors.
-- [x] **Production build:** `npm run build` — succeeds
-  (`tsc && vite build`); output unchanged in shape from before this pass
-  (one pre-existing, unrelated chunk-size warning — see note below).
-- [x] **Lint:** no lint tool is configured in this project (`package.json`
-  has no `eslint`/`lint` script or config file) — `tsc --noEmit` in strict
-  mode is the only static check this repository runs, and it is clean.
-- [x] **No console errors in normal operation:** verified via a scripted
-  Playwright session (Chromium, `--use-fake-device-for-media-stream`)
-  covering the landing screen, a double-click on ENTER CAMERA, three
-  repeated enter/exit cycles, and two resize events. Zero `pageerror`
-  events (uncaught exceptions or unhandled promise rejections) across every
-  scenario. The only `console.error` output observed is this sandbox's
-  expected, already-handled CDN-blocked failure (`net::ERR_TUNNEL_CONNECTION_FAILED`
-  loading MediaPipe's WASM/model from `storage.googleapis.com`/
-  `cdn.jsdelivr.net`), which the app already turns into a proper
-  user-facing error overlay rather than crashing — this is expected sandbox
-  behavior, not a defect.
-- [x] **Automated test suite:** `npx vitest run` — 122/122 tests pass across
-  12 files, unchanged from before this pass (no test needed updating, since
-  no fix changed any function's observable contract — only internal
-  concurrency guards and failure-path behavior that wasn't under test).
+`npm run build` (`tsc && vite build`) succeeds from a clean install (see
+verification section) with zero TypeScript errors and a valid static
+bundle in `dist/`. The build's only output warning — the main JS chunk
+exceeding 500kB (MediaPipe + Three.js are both sizeable) — is pre-existing,
+unrelated to this pass's changes, and already tracked as a known next step
+(see "Known Limitations").
 
-**Note on the build's chunk-size warning:** `npm run build` prints an
-existing, pre-audit warning that the main JS chunk is >500 kB
-(MediaPipe + Three.js are both large). This is already tracked in
-`TODO.md` ("Bundle-size optimization: lazy-load MediaPipe Tasks Vision...")
-as a known, deliberate future improvement, not a regression from this pass
-and not a "major new feature" this audit should undertake.
+## 7. Ensure the application starts cleanly
 
----
+Verified both entry points:
 
-## Summary
+- `npm run dev` serves the app at `http://localhost:5173` with no build
+  errors and no console errors on load.
+- `npm run preview` (serving the actual production `dist/` bundle, at its
+  configured `/PHANTOM/` base path) also serves successfully with no
+  errors.
 
-One critical bug (concurrent camera/vision initialization, causing real
-resource leaks) and three related lower-severity bugs (a camera switch that
-could kill the camera with no recovery path, an unbounded hang in the camera
-startup sequence, and unrecoverable WebGL context loss) were found and
-fixed, all within the four explicit categories most exposed to timing/race
-conditions: **camera stream leaks**, **camera switching bugs**, **model
-loading race conditions**, and **WebGL context issues**. The remaining
-twelve bug categories and all eighteen test scenarios were audited against
-the current codebase and found already correctly handled, per the detail
-above — no other code changes were made. No existing tests needed
-modification, and no new features were added.
+A scripted browser load of both the landing screen and a full ENTER CAMERA
+attempt produced zero uncaught exceptions and zero unhandled promise
+rejections (`page.on('pageerror')`) in either mode.
+
+## 8. Ensure all camera streams are properly stopped when leaving the camera experience
+
+Re-verified (no code change needed here beyond what the prior audit already
+fixed): `App.exitCamera()` unconditionally calls `this.camera.stop()`,
+which is `CameraController.stop()` — it iterates every track on the
+current `MediaStream` and calls `.stop()` on each before clearing
+`this.stream` and the `<video>` element's `srcObject`. This runs on every
+path out of the camera experience: the BACK button, and (since
+`exitCamera()` is also reachable after a fatal error's BACK button) the
+error-recovery path too. The previously-fixed reentrancy guards on
+`enterCamera()`/`CameraController.start()` mean there is no longer a way to
+end up with a second, untracked stream that this cleanup wouldn't reach.
+
+**Verified**: code trace of every call path into `exitCamera()`, plus the
+scripted repeated-enter-exit test (3 cycles) showing no accumulating
+console errors or state corruption.
+
+## 9. Ensure model resources are cleaned up when appropriate
+
+The pose model (`PoseVision`'s `PoseLandmarker`) is a page-lifetime
+resource by design (see ARCHITECTURE.md's "What is never torn down") — it
+is loaded once and reused across every camera enter/exit cycle within the
+same page load, since reloading it (a real network fetch + WASM/GPU
+initialization) on every re-entry would make repeated use of the app
+noticeably slower for no benefit. "Cleaned up when appropriate" for this
+resource means: cleaned up when the page itself is torn down (closing the
+tab releases all WASM/GPU memory the browser process held for it — no
+explicit action needed, this is standard browser behavior), and available
+to be released early via `PoseVision.dispose()` (calls `.close()` on the
+underlying `PoseLandmarker`) should a future full-app-teardown flow need
+it. This is unchanged from before this pass; verified by re-reading
+`PoseVision.ts` and confirming `dispose()` correctly nulls the landmarker
+reference after closing it (no partial state left behind).
+
+## 10. Ensure recording object URLs are released
+
+Verified `RecordingManager`'s object URL lifecycle end to end:
+`discardRecording()` calls `URL.revokeObjectURL(this.previewUrl)` before
+clearing the reference, and is called from all four places a recording's
+preview can become obsolete: `start()` (discarding any previous take before
+recording a new one), `retake()`, `reset()` (e.g. leaving the camera screen
+mid-preview), and `dispose()`. There is no path that creates a new preview
+URL (`URL.createObjectURL`, called once in `onstop`) without a prior
+`discardRecording()` call having already revoked the previous one, so
+repeated record/retake cycles cannot accumulate un-revoked blob URLs.
+Unsaved recordings that are simply abandoned by closing the tab are
+released automatically by the browser (blob URLs are scoped to the
+document that created them) — not a leak.
+
+## 11. Ensure no secret/API key is required
+
+Confirmed by inspection — no code, config, or CI file in this repository
+references an API key, token, or secret of any kind:
+
+- `grep -rniE "API_KEY|apiKey|SECRET|token|import\.meta\.env|process\.env"`
+  across `src/` returned no matches.
+- `.github/workflows/deploy.yml` (the GitHub Pages deploy workflow) uses
+  only GitHub's built-in `id-token`/`pages` permissions — no repository
+  secrets configured or needed.
+- The only network calls the app itself makes are unauthenticated, public
+  static-asset downloads (MediaPipe's WASM runtime and model file) — see
+  PRIVACY.md.
+
+## 12. Verify privacy messaging
+
+Created `PRIVACY.md` — a standalone, thorough explanation of what data
+PHANTOM processes, where (100% on-device), what (if anything) is fetched
+from the network (only the one-time, unauthenticated MediaPipe model/WASM
+download), and exactly what happens to a recording (never uploaded; leaves
+the device only if you explicitly tap SAVE, via the browser's own download
+mechanism). Cross-checked this document's claims against the actual
+in-app copy (the landing screen's "Processing happens locally on this
+device" note and "How it works" panel, and the settings panel's matching
+footer note) — consistent, no contradictions, no claim in either place
+that the code doesn't actually do.
+
+## 13. Verify mobile viewport behavior
+
+Confirmed already correct from a prior UI pass, re-verified in this one:
+
+- `index.html`'s viewport meta uses `viewport-fit=cover` (for safe-area
+  support) with `user-scalable=no` intentional for this fixed-chrome camera
+  UI.
+- `styles.css` sizes the app to `100dvh` (dynamic viewport height), not the
+  classic mobile-Safari-buggy `100vh` that leaves a stale gap when browser
+  chrome shows/hides.
+- `env(safe-area-inset-*)` is applied on every edge, including left/right
+  (for landscape with a notch), across the top HUD, bottom bar, and
+  overlays.
+- Every interactive control maintains a 44px-minimum touch target
+  (grep-verified: `min-height: 44px` present on every button class).
+
+**Verified live**: scripted resize between 390×844 and 844×390 (simulating
+a portrait/landscape rotation) produced no console errors and no visible
+layout assertion failures in either orientation.
+
+## 14. Verify graceful errors
+
+Re-confirmed the existing typed-error model covers every failure this app
+can encounter (camera permission/hardware, vision/model load, recording),
+each translated to a specific, actionable, non-technical message — never a
+raw stack trace or a native `alert()`. Specifically exercised in this pass:
+
+- MediaPipe's CDN being unreachable (true in this sandboxed environment)
+  correctly surfaces as "Failed to load the pose detection model..." with
+  working RETRY/BACK, not a blank screen or an unhandled rejection —
+  confirmed live, repeatedly, across every scripted scenario in this pass.
+- A double-click on ENTER CAMERA while an attempt is already failing
+  produces exactly one error, not a duplicate or conflicting one (the
+  reentrancy guard from the prior audit still holds).
+- Zero uncaught exceptions or unhandled promise rejections
+  (`page.on('pageerror')`) were observed across landing-screen load,
+  double-click entry, three repeated enter/exit cycles, two resize events,
+  and all four debug-mode scenarios in this pass's scripted verification.
+
+## 15. Improve the loading experience
+
+The loading overlay ("Initializing camera & pose model…") was static text
+on a translucent backdrop with no motion and no indication of how long to
+expect. Added:
+
+- A small indeterminate CSS spinner (respects `prefers-reduced-motion` by
+  slowing rather than removing its animation) — honestly indeterminate,
+  since neither `getUserMedia()` nor the MediaPipe model load exposes a
+  real progress fraction to build a real progress bar from.
+- Clearer two-line copy: "Starting camera & loading the pose model…" plus
+  a secondary hint, "First load can take a few seconds while the model
+  downloads," so a multi-second wait on a slower connection reads as
+  expected rather than possibly-broken.
+
+**Verified live**: the spinner element is present and rendered in the
+loading overlay during a real ENTER CAMERA attempt.
+
+## Verification results
+
+Run from a clean install (`rm -rf node_modules dist && npm ci`), matching
+what CI/a new contributor would actually do:
+
+```
+$ npm ci
+added 49 packages, and audited 50 packages in 5s
+found 0 vulnerabilities
+
+$ npx tsc --noEmit
+(no output — zero errors)
+
+$ npm test
+ Test Files  12 passed (12)
+      Tests  122 passed (122)
+
+$ npm run build
+✓ 42 modules transformed.
+dist/index.html                  15.19 kB │ gzip:   3.40 kB
+dist/assets/index-*.css          11.84 kB │ gzip:   3.02 kB
+dist/assets/index-*.js          742.67 kB │ gzip: 193.71 kB
+✓ built in 996ms
+```
+
+Live verification (headless Chromium, `--use-fake-device-for-media-stream`,
+mobile 390×844 viewport, both `npm run dev` and `npm run preview` against
+the real production build):
+
+| Check | Result |
+|---|---|
+| Landing screen loads, no console errors | Pass |
+| `npm run preview` production bundle serves and loads at its configured base path | Pass |
+| Debug mode hidden by default | Pass |
+| `?debug=1` reveals debug settings section | Pass |
+| Debug choice persists across reload via `localStorage` | Pass |
+| `?debug=0` turns it back off | Pass |
+| Loading overlay shows the new spinner | Pass |
+| Double-click ENTER CAMERA: no duplicate attempts, no errors | Pass |
+| 3x repeated enter/exit cycles: no accumulating errors | Pass |
+| 2x simulated orientation resize: no errors | Pass |
+| Uncaught exceptions / unhandled rejections across all of the above | Zero |
+
+The only console output observed anywhere in this sandbox's live testing
+is the expected, already-handled `net::ERR_TUNNEL_CONNECTION_FAILED` when
+fetching MediaPipe's model from `storage.googleapis.com`/
+`cdn.jsdelivr.net` (this sandbox has no route to those hosts) and the
+resulting, correctly-caught `[PHANTOM] Fatal error entering camera
+experience: VisionError` log — this is the app behaving correctly under a
+real network failure, not a defect. A real camera and reachable MediaPipe
+CDN are required to verify actual tracking/effect/recording *quality*
+(vs. crash-freedom) — see TESTING.md's manual checklist for what a
+developer with real hardware should still run before shipping a
+camera/tracking/effect change.
+
+## Known limitations
+
+Carried forward from the project's own tracked "not yet implemented" list
+(previously `TODO.md`, folded in here since that file was removed as part
+of repository cleanup):
+
+- **No standalone "Delay" effect yet.** The effect rail shows a genuinely
+  `disabled` DELAY chip (labeled honestly, not hidden or faked) reserved
+  for it. The underlying pattern (`TrackingHistory` + a delayed-target
+  read) already exists and is exercised by `IndependentShadowEffect`,
+  `CloneEffect`'s DELAYED mode, and `ReverseEffect`'s DELAYED_MIRROR — a
+  dedicated Delay effect would reuse that pattern without the spring/
+  drift/flatten Shadow adds on top.
+- **No UI trigger for `Avatar.setDisplayMode('skeleton')`.** The capability
+  exists and is unit-tested, but nothing in the current UI calls it (not
+  to be confused with the debug-mode-only `DebugSkeleton` overlay toggle,
+  which is a separate, already-wired diagnostic).
+- **No global "reset everything" button** beyond `CloneEffect`'s own RESET
+  ALL — would only be worth adding once more per-effect state exists that
+  users are likely to want to reset all at once.
+- **MediaPipe Tasks Vision (and Three.js) load eagerly at page load**, not
+  lazily on first ENTER CAMERA click. This is the main lever left for
+  reducing landing-page bundle weight, especially on slow mobile
+  connections — reflected in the build's own chunk-size warning (main JS
+  bundle ~743kB / ~194kB gzipped). Not addressed in this pass since it
+  would be a structural loading-order change rather than a bug fix or
+  cleanup, and this pass's brief was explicitly not to redesign the core
+  product.
+- **No dedicated lint tool** (ESLint or similar) is configured — `tsc`'s
+  strict-mode compiler flags are this project's only static check. This
+  has been sufficient so far (strict mode plus `noUnusedLocals`/
+  `noUnusedParameters` catches most of what a basic lint config would),
+  but doesn't cover style/consistency rules a linter would.
+- **Only a single browser/device matrix could be exercised directly** in
+  this environment (headless Chromium via Playwright, no real camera, no
+  reachable MediaPipe CDN). Cross-browser behavior (Safari's `.mp4`
+  recording path in particular, and real GPU context-loss recovery) is
+  verified by code trace, not live execution — see TESTING.md.
+
+## Recommended next engineering steps
+
+In rough priority order for taking this from "audited prototype" toward a
+wider release:
+
+1. **Lazy-load MediaPipe Tasks Vision (and consider Three.js) on first
+   ENTER CAMERA click** rather than at page load, to shrink the landing
+   page's initial bundle — the single highest-leverage remaining
+   performance item, and the main open item from the build's own
+   chunk-size warning.
+2. **Real-device QA pass**, specifically: Safari on iOS (recording codec
+   path, WebGL behavior, `dvh`/safe-area support on an actual notch), a
+   mid/low-end Android device (adaptive inference throttling under real
+   thermal/CPU constraints), and a real front/back camera switch on a
+   phone with two cameras (the switch-failure fallback logic has only been
+   code-traced, never exercised against a real second camera failing).
+   Contributes findings back into TESTING.md's manual checklist.
+3. **Decide the Delay effect's fate**: implement it (the pattern already
+   exists elsewhere in the codebase) or remove its reserved, disabled chip
+   from the effect rail — leaving a permanently-disabled chip is fine for
+   a prototype but should be resolved before a wider release.
+4. **Add a lint config** (ESLint with a TypeScript-aware ruleset) once the
+   team/contributor base grows past what strict `tsc` alone comfortably
+   enforces — not urgent today, but cheap to add early before style drift
+   accumulates.
+5. **Consider basic crash/error telemetry** (opt-in, and consistent with
+   PRIVACY.md's no-tracking stance) if this moves beyond a prototype — right
+   now, a failure in the wild is only visible to the user who hit it,
+   with no way for maintainers to learn about it unless reported manually.

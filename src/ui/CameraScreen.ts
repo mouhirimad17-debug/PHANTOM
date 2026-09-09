@@ -74,6 +74,8 @@ export class CameraScreen {
   private readonly statusDotEl = requireElement<HTMLElement>('status-dot');
   private readonly statusTextEl = requireElement<HTMLElement>('status-text');
 
+  /** The whole "Display" settings section — diagnostics only, hidden unless debug mode is enabled (see utils/debugMode.ts). */
+  private readonly debugSettingsSection = requireElement<HTMLElement>('debug-settings-section');
   private readonly skeletonToggleBtn = requireElement<HTMLButtonElement>('skeleton-toggle-btn');
   private readonly fpsValueEl = requireElement<HTMLElement>('fps-value');
   private readonly visionStatusEl = requireElement<HTMLElement>('vision-status-value');
@@ -128,7 +130,14 @@ export class CameraScreen {
   private recordingState: RecordingState = 'idle';
   private toastTimeout: number | null = null;
 
-  constructor(callbacks: CameraScreenCallbacks) {
+  /**
+   * @param debugModeEnabled Whether developer/debug mode is on for this
+   * session (see utils/debugMode.ts) — gates the "Display" settings section
+   * (live FPS/tracking diagnostics and the skeleton overlay toggle), which
+   * is diagnostic tooling, not a production-facing feature. Effect controls
+   * (Shadow/Clone/Ghost/Reverse) are unaffected and always shown.
+   */
+  constructor(callbacks: CameraScreenCallbacks, debugModeEnabled: boolean) {
     const backBtn = requireElement<HTMLButtonElement>('back-btn');
     const retryBtn = requireElement<HTMLButtonElement>('camera-error-retry-btn');
     const errorBackBtn = requireElement<HTMLButtonElement>('camera-error-back-btn');
@@ -139,6 +148,8 @@ export class CameraScreen {
     // take is being previewed — its parent <footer> is what actually holds
     // layout, so grab it via the button already required above.
     this.recordControls = this.recordToggleBtn.parentElement as HTMLElement;
+
+    this.debugSettingsSection.classList.toggle('hidden', !debugModeEnabled);
 
     backBtn.addEventListener('click', () => callbacks.onBack());
     errorBackBtn.addEventListener('click', () => callbacks.onBack());

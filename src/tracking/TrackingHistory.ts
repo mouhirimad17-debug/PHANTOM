@@ -13,10 +13,10 @@ const DEFAULT_MAX_DURATION_MS = 5000;
 
 /**
  * Fixed-size ring buffer of TrackingFrame snapshots, for effects that need
- * to look back in time (Delay: render a past pose; Reverse: compare past vs
- * present). Not wired into any visual effect yet (see TODO.md) — App.ts
- * pushes into it after every tracking update so it's exercised for real,
- * but nothing reads from it in the render path until an effect needs to.
+ * to look back in time. Each effect that needs this (IndependentShadowEffect,
+ * CloneEffect's DELAYED mode, GhostEffect, ReverseEffect's DELAYED_MIRROR)
+ * owns its own private instance, sized to its own lookback window — there is
+ * no single shared/global history.
  *
  * All storage is pre-allocated in the constructor; `push()` copies frame
  * data into the next ring slot rather than allocating, so this can run

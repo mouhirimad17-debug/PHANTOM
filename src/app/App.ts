@@ -4,7 +4,6 @@ import { PoseVision } from '../vision/PoseVision';
 import { VisionError, type RawPoseFrame } from '../types/vision';
 import { VISIBILITY_THRESHOLD } from '../types/tracking';
 import { TrackingManager } from '../tracking/TrackingManager';
-import { TrackingHistory } from '../tracking/TrackingHistory';
 import { SceneManager } from '../rendering/SceneManager';
 import { DebugSkeleton } from '../rendering/DebugSkeleton';
 import { Avatar } from '../avatar/Avatar';
@@ -19,6 +18,7 @@ import { CameraScreen } from '../ui/CameraScreen';
 import { FpsCounter } from '../utils/FpsCounter';
 import { clamp } from '../utils/math';
 import { isWebGLAvailable } from '../utils/webgl';
+import { isDebugModeEnabled } from '../utils/debugMode';
 
 const NO_EFFECT_LABEL = 'None (base avatar)';
 const INDEPENDENT_SHADOW_LABEL = 'Shadow';
@@ -43,7 +43,6 @@ export class App {
   private readonly poseVision = new PoseVision();
   private readonly fpsCounter = new FpsCounter();
   private readonly webglAvailable = isWebGLAvailable();
-  private readonly trackingHistory = new TrackingHistory();
 
   private sceneManager: SceneManager | null = null;
   private trackingManager: TrackingManager | null = null;
@@ -75,51 +74,55 @@ export class App {
   private enteringCameraPromise: Promise<void> | null = null;
 
   constructor() {
-    this.cameraScreen = new CameraScreen({
-      onBack: () => this.exitCamera(),
-      onRetry: () => void this.enterCamera(),
-      onCameraSwitch: () => void this.switchCamera(),
-      onDebugToggle: (visible) => this.debugSkeleton?.setVisible(visible),
-      onIndependentShadowToggle: (active) => {
-        if (active) this.independentShadowEffect?.enable();
-        else this.independentShadowEffect?.disable();
+    const debugMode = isDebugModeEnabled();
+    this.cameraScreen = new CameraScreen(
+      {
+        onBack: () => this.exitCamera(),
+        onRetry: () => void this.enterCamera(),
+        onCameraSwitch: () => void this.switchCamera(),
+        onDebugToggle: (visible) => this.debugSkeleton?.setVisible(visible),
+        onIndependentShadowToggle: (active) => {
+          if (active) this.independentShadowEffect?.enable();
+          else this.independentShadowEffect?.disable();
+        },
+        onIndependentShadowSensitivity: (value) => this.independentShadowEffect?.configure({ followStrength: value }),
+        onCloneToggle: (active) => {
+          if (active) this.cloneEffect?.enable();
+          else this.cloneEffect?.disable();
+        },
+        onCloneCountChange: (count: CloneCount) => this.cloneEffect?.configure({ count }),
+        onCloneModeChange: (mode: CloneMode) => this.cloneEffect?.configure({ mode }),
+        onCloneResetAll: () => this.cloneEffect?.reset(),
+        onGhostToggle: (active) => {
+          if (active) this.ghostEffect?.enable();
+          else this.ghostEffect?.disable();
+        },
+        onGhostOpacityChange: (value) => this.ghostEffect?.configure({ opacity: value }),
+        onGhostDelayChange: (value) => this.ghostEffect?.configure({ delayMilliseconds: value }),
+        onGhostGlowChange: (value) => this.ghostEffect?.configure({ glowStrength: value }),
+        onGhostTrailToggle: (trailEnabled) => this.ghostEffect?.configure({ trailEnabled }),
+        onReverseToggle: (active) => {
+          if (active) this.reverseEffect?.enable();
+          else this.reverseEffect?.disable();
+          this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
+        },
+        onReversePresetChange: (preset: ReversePreset) => {
+          this.reverseEffect?.configure({ preset });
+          this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
+        },
+        onRecordStart: () => {
+          try {
+            this.recordingManager?.start(this.cameraMirrored);
+          } catch (err) {
+            this.cameraScreen.showNote(this.describeRecordingError(err));
+          }
+        },
+        onRecordStop: () => this.recordingManager?.stop(),
+        onRecordRetake: () => this.recordingManager?.retake(),
+        onRecordDownload: () => this.recordingManager?.download(),
       },
-      onIndependentShadowSensitivity: (value) => this.independentShadowEffect?.configure({ followStrength: value }),
-      onCloneToggle: (active) => {
-        if (active) this.cloneEffect?.enable();
-        else this.cloneEffect?.disable();
-      },
-      onCloneCountChange: (count: CloneCount) => this.cloneEffect?.configure({ count }),
-      onCloneModeChange: (mode: CloneMode) => this.cloneEffect?.configure({ mode }),
-      onCloneResetAll: () => this.cloneEffect?.reset(),
-      onGhostToggle: (active) => {
-        if (active) this.ghostEffect?.enable();
-        else this.ghostEffect?.disable();
-      },
-      onGhostOpacityChange: (value) => this.ghostEffect?.configure({ opacity: value }),
-      onGhostDelayChange: (value) => this.ghostEffect?.configure({ delayMilliseconds: value }),
-      onGhostGlowChange: (value) => this.ghostEffect?.configure({ glowStrength: value }),
-      onGhostTrailToggle: (trailEnabled) => this.ghostEffect?.configure({ trailEnabled }),
-      onReverseToggle: (active) => {
-        if (active) this.reverseEffect?.enable();
-        else this.reverseEffect?.disable();
-        this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
-      },
-      onReversePresetChange: (preset: ReversePreset) => {
-        this.reverseEffect?.configure({ preset });
-        this.cameraScreen.setReversePreviewLabel(this.reverseEffect?.getPreviewLabel() ?? '');
-      },
-      onRecordStart: () => {
-        try {
-          this.recordingManager?.start(this.cameraMirrored);
-        } catch (err) {
-          this.cameraScreen.showNote(this.describeRecordingError(err));
-        }
-      },
-      onRecordStop: () => this.recordingManager?.stop(),
-      onRecordRetake: () => this.recordingManager?.retake(),
-      onRecordDownload: () => this.recordingManager?.download(),
-    });
+      debugMode,
+    );
     this.landingScreen = new LandingScreen({
       onEnterCamera: () => void this.enterCamera(),
     });
@@ -285,7 +288,6 @@ export class App {
     this.ghostEffect?.reset();
     this.reverseEffect?.reset();
     this.recordingManager?.reset();
-    this.trackingHistory.clear();
     this.visionDetectionFailed = false;
     this.lastDetectMs = -Infinity;
     this.lastInferenceDurationMs = null;
@@ -388,7 +390,6 @@ export class App {
     const frame = trackingManager.update(raw, nowMs);
     debugSkeleton.update(frame);
     avatar.updateFromTracking(frame);
-    this.trackingHistory.push(frame);
 
     // The effect's spring integrator needs real elapsed time, independent of
     // the (adaptively throttled) detection interval above.

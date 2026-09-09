@@ -791,6 +791,37 @@ button {
   color: var(--text);
 }
 
+.overlay-subtext {
+  margin-top: -0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+/* Indeterminate loading spinner — no real progress signal exists from
+   getUserMedia()/the pose model load, so this is honest about that (a
+   spinner, not a fake progress bar) while still giving the loading overlay
+   some motion instead of static text alone. */
+.spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  border: 3px solid var(--surface-border);
+  border-top-color: var(--accent);
+  animation: spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 .overlay-actions {
   display: flex;
   gap: 0.75rem;

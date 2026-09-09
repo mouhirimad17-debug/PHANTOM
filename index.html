@@ -169,8 +169,15 @@
           </div>
 
           <div class="settings-panel-body">
-            <details class="settings-section" open>
-              <summary>Display</summary>
+            <!--
+              Developer/debug diagnostics only — hidden in normal production
+              use. Shown only when debug mode is enabled (?debug=1 in the
+              URL, persisted to localStorage — see README's "Developer /
+              debug mode" section and src/utils/debugMode.ts). Visibility is
+              set at startup by CameraScreen's constructor.
+            -->
+            <details id="debug-settings-section" class="settings-section hidden">
+              <summary>Display (debug)</summary>
               <div class="settings-section-body">
                 <button id="skeleton-toggle-btn" class="btn btn-secondary btn-block" type="button" aria-pressed="false">
                   SKELETON OVERLAY: OFF
@@ -183,7 +190,7 @@
                   <div class="stat-row"><span>Landmarks</span><span id="landmark-count-value">-</span></div>
                   <div class="stat-row"><span>Inference</span><span id="inference-time-value">-</span></div>
                   <div class="stat-row"><span>Effect</span><span id="current-effect-value">-</span></div>
-                  <!-- Temporary mirroring diagnostic (right wrist). -->
+                  <!-- Mirroring diagnostic (right wrist): raw model X vs. the X actually rendered. -->
                   <div class="stat-row"><span>Raw X</span><span id="raw-x-value">-</span></div>
                   <div class="stat-row"><span>Render X</span><span id="render-x-value">-</span></div>
                   <div class="stat-row"><span>Mirrored</span><span id="mirrored-value">-</span></div>
@@ -191,7 +198,7 @@
               </div>
             </details>
 
-            <details class="settings-section">
+            <details class="settings-section" open>
               <summary>Shadow</summary>
               <div class="settings-section-body">
                 <div class="field-row">
@@ -305,7 +312,9 @@
         </div>
 
         <div id="camera-loading" class="overlay hidden" role="status" aria-live="polite">
-          <p>Initializing camera &amp; pose model&hellip;</p>
+          <div class="spinner" aria-hidden="true"></div>
+          <p>Starting camera &amp; loading the pose model&hellip;</p>
+          <p class="overlay-subtext">First load can take a few seconds while the model downloads.</p>
         </div>
 
         <div id="camera-error" class="overlay hidden" role="alert">
