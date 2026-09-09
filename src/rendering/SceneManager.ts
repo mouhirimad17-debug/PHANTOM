@@ -37,6 +37,11 @@ export class SceneManager {
   private rafHandle: number | null = null;
   private container: HTMLElement | null = null;
   private readonly resizeObserver: ResizeObserver;
+  private readonly canvas: HTMLCanvasElement;
+  /** Set when a context loss stops an actively-running loop, so the matching restore only resumes what was actually running — see the constructor's context-lost/restored handlers. */
+  private resumeOnContextRestore = false;
+  private readonly handleContextLost: (event: Event) => void;
+  private readonly handleContextRestored: () => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.scene = new Scene();
@@ -59,11 +64,29 @@ export class SceneManager {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer = renderer;
+    this.canvas = canvas;
 
-    canvas.addEventListener('webglcontextlost', (event) => {
+    // Named handlers (not inline closures) so dispose() can actually remove
+    // them — an anonymous listener here would leak for the object's whole
+    // lifetime with no way to detach it.
+    this.handleContextLost = (event: Event): void => {
       event.preventDefault();
+      // A lost context can be transient (GPU driver reset, mobile tab
+      // backgrounding); remember whether the loop was actually running so
+      // handleContextRestored knows whether to resume it, rather than
+      // resurrecting a loop the user had already stopped (e.g. by leaving
+      // the camera screen) before the context came back.
+      this.resumeOnContextRestore = this.rafHandle !== null;
       this.stop();
-    });
+    };
+    this.handleContextRestored = (): void => {
+      if (this.resumeOnContextRestore) {
+        this.resumeOnContextRestore = false;
+        this.start();
+      }
+    };
+    canvas.addEventListener('webglcontextlost', this.handleContextLost);
+    canvas.addEventListener('webglcontextrestored', this.handleContextRestored);
 
     const ambient = new AmbientLight(0xffffff, 0.6);
     const key = new DirectionalLight(0xffffff, 1.2);
@@ -155,6 +178,8 @@ export class SceneManager {
     this.stop();
     this.timer.dispose();
     this.resizeObserver.disconnect();
+    this.canvas.removeEventListener('webglcontextlost', this.handleContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored);
     this.listeners.clear();
     this.afterRenderListeners.clear();
     this.renderer.dispose();

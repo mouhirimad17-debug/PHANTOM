@@ -18,6 +18,16 @@ const MODEL_URL =
 export class PoseVision {
   private landmarker: PoseLandmarker | null = null;
   private status: VisionStatus = 'idle';
+  /**
+   * The in-flight init() attempt, if any. A second concurrent call (e.g.
+   * overlapping enterCamera() attempts) awaits this same attempt instead of
+   * starting its own model load — two overlapping loads would otherwise
+   * both eventually resolve, and whichever finished last would silently
+   * replace `this.landmarker`, leaking the other's (already GPU/CPU-resident)
+   * PoseLandmarker instance since nothing else ever held a reference to it
+   * to call `.close()`.
+   */
+  private initPromise: Promise<void> | null = null;
 
   getStatus(): VisionStatus {
     return this.status;
@@ -28,6 +38,17 @@ export class PoseVision {
   }
 
   async init(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    const promise = this.doInit();
+    this.initPromise = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.initPromise === promise) this.initPromise = null;
+    }
+  }
+
+  private async doInit(): Promise<void> {
     this.status = 'loading';
 
     let fileset;

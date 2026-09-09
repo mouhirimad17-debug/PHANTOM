@@ -63,6 +63,16 @@ export class App {
   private lastInferenceDurationMs: number | null = null;
   private lastEffectUpdateMs = -Infinity;
   private visionDetectionFailed = false;
+  /**
+   * Guards enterCamera() against overlapping calls (a double-tap on ENTER
+   * CAMERA, or rapid clicks on the error overlay's RETRY button while a
+   * previous attempt is still in flight). Without this, a second call would
+   * re-run camera.start() and poseVision.init() concurrently with the
+   * first: both create a real MediaStream/PoseLandmarker, but only the
+   * result of whichever resolves last is ever kept, leaking the other's
+   * camera stream (tracks never stopped) and pose model (never disposed).
+   */
+  private enteringCameraPromise: Promise<void> | null = null;
 
   constructor() {
     this.cameraScreen = new CameraScreen({
@@ -175,7 +185,19 @@ export class App {
     this.landingScreen.show();
   }
 
+  /** Guarded entry point — see enteringCameraPromise's doc. Overlapping calls share the one in-flight attempt instead of re-running it. */
   private async enterCamera(): Promise<void> {
+    if (this.enteringCameraPromise) return this.enteringCameraPromise;
+    const promise = this.doEnterCamera();
+    this.enteringCameraPromise = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.enteringCameraPromise === promise) this.enteringCameraPromise = null;
+    }
+  }
+
+  private async doEnterCamera(): Promise<void> {
     const sceneManager = this.sceneManager;
     const trackingManager = this.trackingManager;
 
@@ -235,7 +257,19 @@ export class App {
       this.cameraScreen.setCameraSwitchAvailable(status.canSwitchFacing);
     } catch (err) {
       console.error('[PHANTOM] Failed to switch camera.', err);
-      this.cameraScreen.showNote(this.describeError(err));
+      if (this.camera.isActive()) {
+        // CameraController.switchFacing() fell back to restoring the
+        // previous facing mode — the live camera is still working, so this
+        // is a non-fatal hiccup: a toast is enough.
+        this.cameraScreen.showNote(this.describeError(err));
+      } else {
+        // Both the new and the fallback facing failed — the camera is
+        // genuinely stopped now, not just showing a stale frame. A toast
+        // would misleadingly imply the live view is still fine; show the
+        // same fatal error overlay enterCamera() uses instead, so RETRY
+        // gives the user a real way back in.
+        this.handleFatalError(err);
+      }
     } finally {
       this.cameraScreen.setCameraSwitchBusy(false);
     }
